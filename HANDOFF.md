@@ -1,87 +1,86 @@
-# HANDOFF — Gone Fishing
+# HANDOFF — Gone Fishing (tycoon + active fishing update)
 
-`~/gone-fishing` (isolated; the home directory is not a git repo and nothing else was touched).
-Status: complete and playable. Nothing was committed, pushed or deployed.
+Branch `gameplay/tycoon-active-fishing` on top of `main` (`caecef0`). Not pushed, merged or
+deployed. The previous release is the Netlify-deployed idle loop; this update adds a worker
+business, an optional hands-on minigame, and contracts, in response to "all I can do is let
+it sit."
 
-## Implemented
+## What changed
 
-Everything in the brief: one-button automatic fishing that sells catches itself; 3 locations
-× 5 species in Common→Legendary order (base 58/28/10/3.5/0.5, renormalized after bait
-modifiers); 4 rods (20/16/12/9s); 3 one-time baits with printed tradeoffs; permanent collection
-with catch counts, best weights, trophy counts (≥90% of range) and hints for undiscovered fish;
-coins only; pause/resume; "While you were away" summary; JSON export/import with strict
-validation; reset with a working Cancel; corrupt-save preservation; single-writer tab lock.
-Live and offline play share one DOM-free path, `advanceState(state, now)` in `src/engine.js`, so
-batched and incremental time produce identical catches.
+- **Business (schema v2).** Up to 6 workers, each with its own location, bait, RNG stream and
+  fractional cast progress. Dock levels gate capacity (2→6); stall levels multiply all sales
+  (1.0→1.3, three paid levels); rod upgrades are shared by every worker and the player. Worker 2
+  is free; 3–6 cost coins. All prices/effects live in `src/data.js` (`HIRE_COSTS`, `DOCK_LEVELS`,
+  `STALL_LEVELS`). The scene grows: extra stations per worker, longer dock, bigger stall, and
+  labeled boats for workers fishing other waters.
+- **Fish Yourself.** Cast → up to three reel-timing taps against a moving marker → catch settles
+  once. Quality 0..1 per tap; missed taps or the "Take an ordinary fish" button settle at a fixed
+  0.4 quality. Payouts are capped at 2× a worker's average catch (`PLAYER_CAST.valueCapWorkerCasts`)
+  so perfect play ≈1.3× a worker per attempt and auto ≈0.9× — a boost, not a takeover. Separate
+  player RNG stream; canceled casts (hide/pause/tab switch) drop safely with no penalty and no
+  offline simulation of hand catches.
+- **Contracts.** Board of three offers from unlocked content only (pond quantities, size hunts on
+  common/uncommon fish, Uncommon/Rare-or-better). One accepted at a time, progress only from
+  post-acceptance catches (workers or hand), bonus paid exactly once on top of normal sales,
+  abandon without penalty, fresh board on demand — never auto-accepted while away.
 
-## File map
+## Files
 
-`index.html`, `styles.css` · `src/data.js` (all tuning) · `src/rng.js` · `src/engine.js` ·
-`src/save.js` · `src/scene.js` · `src/ui.js` · `src/panels.js` · `src/main.js` ·
-`test/{engine,save,content}.test.js` · `tools/simulate.mjs`
+`src/engine.js` (all simulation), `src/data.js` (all tuning), `src/save.js` (v1→v2 migration +
+validation), `src/dock.js`, `src/fishing.js`, `src/scene.js` (growing dock), `src/ui.js`,
+`src/panels.js`, `src/main.js`. Tests: `test/engine.test.js`, `test/save.test.js`,
+`test/content.test.js`. Simulation: `tools/simulate.mjs`.
 
 ## Tests and results
 
 ```
-cd ~/gone-fishing && npm test     # node --test test/*.test.js  →  tests 29, pass 29, fail 0
-npm run simulate                  # fixed-seed balance table
+npm test          # node --test test/*.test.js → tests 39, pass 39, fail 0
+npm run simulate  # idle vs active policies over five seeds
 ```
 
-Covers: correct coin value per catch; partial progress survives serialization; the same timestamp
-twice awards nothing; batched vs incremental agreement (120 steps vs one batch: identical coins,
-RNG, progress, recent feed); a 20h absence credits exactly 8h once and never replays; paused time
-earns nothing; backward clock awards nothing; setup changes never apply retroactively;
-affordability, ownership and auto-equip; species rolls stay inside the selected location under all
-baits; collection totals, bests and trophies match the catch log; trophy ⇒ best ≥ threshold;
-16 malformed imports leave the live state unchanged; corrupt saves are preserved, not erased.
+New coverage: v1→v2 migration (coins/gear/collection preserved; fisher becomes worker 1 with the
+same stream and fractional progress; `fishing` → pause; player/contracts start fresh; idempotent
+re-import; backup written once; invalid v1 rejected), hire/capacity/affordability, assignments
+across locations, no retroactive earnings on any purchase or assignment, batched vs incremental
+multi-worker determinism (identical coins, per-worker catches/progress/streams), 8h cap across
+workers, pause, backward clock, player settle exactly once + cancel safety + auto-settle floor,
+contract eligibility/post-acceptance counting/one-time bonus, save/reload of contracts.
 
-## Balance and observations
+## Balance (measured, `npm run simulate`, 3h, five seeds)
 
-Time to afford (cheapest-first greedy policy, 5 seeds): Fiberglass Rod (900) 2m20s–9m;
-Willow River (3500) 18m–37m; Moonlit Lake (60000) 1h20m–1h44m — targets 3–5 min, 20–40 min,
-1–3 h. Bait tradeoffs, measured by running the engine 3h at the pond: Worms 10,271 coins/h with
-10.7% of casts trophies; Minnows 9,929 coins/h, 20.5% trophies, median catch at 68% of the range
-(records bait, ≈3% income cost); Glow Lure 13,808 coins/h, 8.8% trophies, ~2.9× legendary odds
-(faster collection, worse records, 40% fewer casts). Simulation forced two fixes: the Glow Lure
-originally doubled Worms' income (now milder rarity multipliers plus a downward size bias), and
-Minnows originally cost ~11% income.
+Idle-only (policy: hire → dock → stall as affordable): reaches 6 workers/dock 4/stall 3 within
+~1.5h, then ≈128k coins banked. Active 12 casts/h (perfect play) on top: ≈310k banked with
+earlier bait/rod/location purchases. Active + contracts: ≈325k and contract 1 accepted in the
+first seconds. So active play roughly doubles early income and speeds every purchase; idle-only
+still completes the whole progression — nothing requires hand play. First purchase within
+~2–4 min of active play; several choices and a visible dock change within 10–15 min.
 
-Caveat: species *discovery* is faster than "several sessions" — 14–15/15 appear within ~3h of
-play; the long tail is trophies and best weights. Left deliberately, since tightening it means
-altering the 0.5% legendary odds the brief specified.
+## Verified in a real browser (Chromium 153 headless over CDP)
 
-## Verified in a real browser
+Five-minute fresh session: cast → reel ×3 → trophy Largemouth Bass 6.56 lb (new species) →
+cast again → contract offers shown → accepted "0/8 · bonus 858" → purchased Hire worker 2
+(free) → 90s of business income → pause froze coins exactly → reload restored 2 workers/
+contract state. Screenshots in `.browser-check/`. Worker assignment change requires a second
+location (correct on a fresh game; the select disables nothing but shows one option). Mobile
+375px: no horizontal overflow. Reduced motion: marker hidden, every tap scores a fair hit.
+Console: no errors in any run.
 
-Chromium 153 headless over CDP (the Hermes browser tool blocks loopback URLs); screenshots in
-`.browser-check/`. A new player starts at 0 coins, 0/15, "Start Fishing", Bamboo Pole · Worms ·
-20s cast, and gets a first catch ~20s after one click with no repeat clicking. Pause freezes
-coins and progress; resume earns. Shops gate by affordability and auto-equip; a location unlock
-switches scene and keeps old records. A 3h absence credited 540 fish / 33,012 coins, listing new
-species and records; a 20h absence credited exactly 8h / 1,440 fish and reported 12h discarded;
-immediate reload after either credits nothing more; paused absence credits nothing. Export wrote
-a real JSON file; an invalid import was rejected with no state change; a valid import asked
-first, with Cancel, Escape and Confirm all correct; reset Cancel/Confirm both correct. A second
-tab opened read-only with a warning while the first kept writing. Zero animation frames while
-the page reported hidden, with the gap credited on return. 375px has no horizontal overflow;
-desktop caps at 960px in two columns; contrast 9.0:1 (hints) to 13.4:1 (names); no console
-errors in any run.
+## Not verified / known issues
 
-Unverified: real background-tab throttling (headless Chrome does not background non-active
-targets, so the handler was exercised by dispatching a genuine `visibilitychange` with
-`document.hidden` stubbed); a hand-driven file picker (driven via `DOM.setFileInputFiles`);
-Safari/Firefox rendering; the `localStorage` heartbeat fallback.
-
-## Known rough edges
-
-- Minnows and the Glow Lure equip the moment they are bought, so cast time changes immediately —
-  old-rate time is always settled first, so nothing is retroactive.
-- Weights and thresholds are displayed rounded: a best exactly at the bar can render as 20.1 lb
-  beside a 20.1 lb threshold (equal internally).
-- `.browser-check/` holds validation screenshots and is disposable.
+- Real background-tab throttling (headless Chrome does not background non-active targets; the
+  visibility handler was exercised via a genuine `visibilitychange` event with `document.hidden`
+  stubbed). Safari/Firefox untested.
+- `window.__gfState`-style test hooks are not shipped; the browser harness mirrors saves via a
+  `setItem` interceptor (test-side only).
+- Player value cap scales from the pond's average even when fishing richer water — intentional
+  (keeps early river trips strong but bounded), worth revisiting if hand-fishing the lake feels
+  weak late-game.
+- Contract "rarity" offers accept any location by design; the UI says so.
 
 ## For the next agent
 
-Keep `advanceState` DOM-free and timestamp-driven; the offline guarantee and several tests
-depend on it. Never persist time without moving `processedAt` forward. When testing offline
-behavior over CDP, block the live tab's `localStorage.setItem` first — otherwise it overwrites
-an injected save within a second and again on `pagehide`.
+Keep every random consumer on its own persisted stream (`worker.rngState`, `player.rngState`,
+`contract.rngState`) and keep `advanceState` the only time path — batching determinism and the
+offline cap are asserted by tests. Migrate schemas by adding a `validateV<n>` + `migrateV(n-1)→n`
+pair in `save.js` and bumping `CURRENT_SCHEMA_VERSION`; the backup-once flag lives under
+`gone-fishing.migrated.v3` style keys. Simulate before tuning prices: `npm run simulate`.

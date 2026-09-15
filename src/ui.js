@@ -1,26 +1,31 @@
 /**
- * Gone Fishing — DOM helpers and panel rendering.
- * Rendering is event-driven (catches, purchases, tab changes); the once-per-frame
- * work is limited to the cast progress bar so focus and scroll are never disturbed.
+ * Gone Fishing — DOM helpers, header, recent feed, away summary.
+ * Rendering is event-driven; the once-per-frame work is limited to the player's
+ * reel marker so focus and scroll are never disturbed.
  */
 
 import {
   AWAY_CAP_HOURS,
   RARITY_LABEL,
-  getBait,
   getLocation,
   getRod,
   getSpecies,
-  speciesByLocation,
-  trophyThreshold,
 } from './data.js';
-import { collectionEntry, currentCastDurationMs, discoveredCount, trophyTotal } from './engine.js';
+import {
+  currentCastDurationMs,
+  discoveredCount,
+  dockName,
+  stallMultiplier,
+  stallName,
+  trophyTotal,
+} from './engine.js';
 import { sceneSvg } from './scene.js';
 
 const $ = (id) => document.getElementById(id);
 
 export const els = {
   coins: $('stat-coins'),
+  income: $('stat-income'),
   collection: $('stat-collection'),
   trophies: $('stat-trophies'),
   banners: $('banners'),
@@ -28,9 +33,6 @@ export const els = {
   sceneCaption: $('scene-caption'),
   controlLocation: $('control-location'),
   controlSetup: $('control-setup'),
-  castBar: $('cast-bar'),
-  castFill: $('cast-fill'),
-  castLabel: $('cast-label'),
   toggle: $('toggle-fishing'),
   miniCasts: $('mini-casts'),
   miniCatches: $('mini-catches'),
@@ -40,6 +42,8 @@ export const els = {
   collectionBody: $('collection-body'),
   collectionSummary: $('collection-summary'),
   tackleBody: $('tackle-body'),
+  dockBody: $('dock-body'),
+  fishBody: $('fish-body'),
   awayShell: $('away-shell'),
   awayBody: $('away-body'),
   settingsShell: $('settings-shell'),
@@ -92,40 +96,77 @@ export function clearBanner(key) {
   if (node) node.remove();
 }
 
-// ------------------------------------------------------------------ header
+/* ------------------------------------------------------------------ header */
 
-export function renderHeader(state) {
+export function renderHeader(state, workerIncome = null) {
   els.coins.textContent = formatCoins(state.coins);
   els.collection.textContent = `${discoveredCount(state)}/15`;
   els.trophies.textContent = nf.format(trophyTotal(state));
+  if (els.income) {
+    els.income.textContent = workerIncome === null ? '—' : `≈ ${formatCoins(workerIncome)}/h`;
+    els.income.setAttribute('title', workerIncome === null
+      ? 'Estimated earnings of your workers while the business runs'
+      : `Rough estimate of what your ${state.workers.length} worker${state.workers.length === 1 ? '' : 's'} earn per hour while the business runs. Luck moves this up and down.`);
+  }
 }
 
-// ------------------------------------------------------- fishing / controls
+/* ------------------------------------------------------- scene and controls */
 
 let sceneKey = null;
 
+function shortLocation(id) {
+  return id === 'loc_pond' ? 'Pond' : id === 'loc_river' ? 'River' : 'Lake';
+}
+
+function sceneDescription(state, shownLocationId) {
+  const parts = state.unlockedLocations
+    .map((id) => {
+      const count = state.workers.filter((w) => w.locationId === id).length;
+      return count ? `${count} at ${shortLocation(id)}` : null;
+    })
+    .filter(Boolean);
+  return `Dock scene: ${dockName(state)}, ${state.workers.length} fishing station${state.workers.length === 1 ? '' : 's'} (${parts.join(', ')}), fish stall level ${state.stallLevel}.`;
+}
+
 export function renderScene(state) {
-  const location = getLocation(state.locationId);
-  const key = `${state.locationId}-${state.unlockedLocations.length}`;
+  // The scene shows the dock: the location the player is fishing at, or the
+  // busiest worker location if the player is somewhere unstarted.
+  const shown = state.player.locationId || state.unlockedLocations[0];
+  const awayWorkers = state.workers
+    .filter((w) => w.locationId !== shown)
+    .map((w) => ({ label: shortLocation(w.locationId) }));
+  const key = [
+    shown, state.dockLevel, state.stallLevel, state.workers.length,
+    state.workers.map((w) => w.locationId).join(','),
+  ].join('|');
   if (key === sceneKey) return;
   sceneKey = key;
-  els.scene.innerHTML = sceneSvg(location, String(state.unlockedLocations.length));
-  els.scene.setAttribute('aria-label', `Fishing scene at ${location.name}`);
-  els.sceneCaption.textContent = location.blurb;
+
+  const sceneLocation = { scene: shown === 'loc_pond' ? 'pond' : shown === 'loc_river' ? 'river' : 'lake' };
+  els.scene.innerHTML = sceneSvg(sceneLocation, {
+    workers: state.workers.length,
+    dockLevel: state.dockLevel,
+    stallLevel: state.stallLevel,
+    awayWorkers,
+  });
+  els.scene.setAttribute('aria-label', sceneDescription(state, shown));
+
+  const stallNote = stallMultiplier(state) > 1
+    ? ` Sales ×${stallMultiplier(state).toFixed(1)} at the ${stallName(state)}.`
+    : '';
+  els.sceneCaption.textContent =
+    `${dockName(state)}: ${state.workers.length} worker${state.workers.length === 1 ? '' : 's'} fishing` +
+    (awayWorkers.length ? ` (${awayWorkers.map((w) => `1 → ${w.label}`).join(', ')} by boat)` : '') + '.' + stallNote;
 }
 
 export function renderControls(state) {
-  const location = getLocation(state.locationId);
   const rod = getRod(state.rodId);
-  const bait = getBait(state.baitId);
-  const duration = currentCastDurationMs(state);
-
-  els.controlLocation.textContent = location.name;
+  els.controlLocation.textContent = `${dockName(state)} — ${state.workers.length} worker${state.workers.length === 1 ? '' : 's'}`;
   els.controlSetup.innerHTML =
-    `${escapeHtml(rod.name)} · ${escapeHtml(bait.name)} · ${(duration / 1000).toFixed(0)}s per cast`;
-
-  els.toggle.textContent = state.fishing ? 'Pause' : 'Start Fishing';
-  els.toggle.setAttribute('aria-pressed', String(state.fishing));
+    `Shared rod: ${escapeHtml(rod.name)} (${Math.round(currentCastDurationMs(state) / 1000)}s casts) · ` +
+    `stall ×${stallMultiplier(state).toFixed(1)} · <strong>${state.paused ? 'Paused — nothing is earning' : 'Business running'}</strong>`;
+  els.toggle.textContent = state.paused ? 'Resume business' : 'Pause business';
+  els.toggle.setAttribute('aria-pressed', String(state.paused));
 
   els.miniCasts.textContent = nf.format(state.castCount);
   els.miniCatches.textContent = nf.format(state.lifetimeCatches);
@@ -133,28 +174,7 @@ export function renderControls(state) {
   els.miniTime.textContent = formatClock(state.playTimeMs);
 }
 
-/** Once-per-frame, deliberately tiny: only the bar width and one line of text. */
-export function renderCastProgress(state, now) {
-  const duration = currentCastDurationMs(state);
-  if (!state.fishing) {
-    const frozen = duration > 0 ? state.castProgressMs / duration : 0;
-    els.castFill.style.width = `${(frozen * 100).toFixed(1)}%`;
-    els.castBar.setAttribute('aria-valuenow', String(Math.round(frozen * 100)));
-    els.castLabel.textContent = state.castProgressMs > 0
-      ? `Paused mid-cast (${formatDuration(state.castProgressMs)} of ${formatDuration(duration)}).`
-      : 'Paused. Nothing is earning.';
-    els.castLabel.classList.remove('is-fishing');
-    return;
-  }
-  const progress = duration > 0 ? Math.min(1, state.castProgressMs / duration) : 0;
-  const remaining = Math.max(0, duration - state.castProgressMs);
-  els.castFill.style.width = `${(progress * 100).toFixed(1)}%`;
-  els.castBar.setAttribute('aria-valuenow', String(Math.round(progress * 100)));
-  els.castLabel.textContent = `Fishing… next catch in ${(remaining / 1000).toFixed(1)}s`;
-  els.castLabel.classList.add('is-fishing');
-}
-
-// ------------------------------------------------------------------ recent
+/* ------------------------------------------------------------------ recent */
 
 export function recordToHtml(record) {
   const species = getSpecies(record.speciesId);
@@ -162,18 +182,19 @@ export function recordToHtml(record) {
   if (record.isNewSpecies) tags.push('<span class="tag tag-new">New species</span>');
   if (record.isRecord) tags.push('<span class="tag tag-record">Personal best</span>');
   if (record.trophy) tags.push('<span class="tag tag-trophy">Trophy</span>');
+  const who = record.source === 'player' ? '<span class="tag tag-you">You</span>' : '';
   return `<li class="rarity-${species.rarity}${record.isNewSpecies || record.isRecord ? ' flash' : ''}">
     <span class="fish">${escapeHtml(species.name)}</span>
     <span class="rarity-label">${RARITY_LABEL[species.rarity]}</span>
     <span class="weight">${formatWeight(record.weight)}</span>
-    ${tags.join(' ')}
+    ${who}${tags.join(' ')}
     <span class="value">+${formatCoins(record.coins)}</span>
   </li>`;
 }
 
 export function renderRecent(state, { animate = false } = {}) {
   if (!state.recent.length) {
-    els.recentList.innerHTML = '<li class="empty">No catches yet. Start fishing and the fish will come to you.</li>';
+    els.recentList.innerHTML = '<li class="empty">No catches yet. Your worker is on it — or cast yourself.</li>';
     return;
   }
   els.recentList.innerHTML = state.recent.map(recordToHtml).join('');
@@ -183,7 +204,7 @@ export function renderRecent(state, { animate = false } = {}) {
   }
 }
 
-// ------------------------------------------------------------ away summary
+/* ------------------------------------------------------------- away summary */
 
 export function renderAwaySummary(summary, state) {
   if (!summary.creditedMs) return;
@@ -197,7 +218,7 @@ export function renderAwaySummary(summary, state) {
     `<div><dt>Time credited</dt><dd>${formatClock(summary.creditedMs)}</dd></div>`,
     `<div><dt>Fish caught</dt><dd>${nf.format(summary.catches.length)}</dd></div>`,
     `<div><dt>Coins earned</dt><dd>${formatCoins(summary.coins)}</dd></div>`,
-    `<div><dt>Trophies</dt><dd>${nf.format(summary.trophies)}</dd></div>`,
+    `<div><dt>Workers paid</dt><dd>${state.workers.length}</dd></div>`,
   ];
 
   const highlights = [];

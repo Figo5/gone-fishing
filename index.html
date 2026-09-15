@@ -22,6 +22,10 @@
           <span class="stat-label">Coins</span>
           <strong id="stat-coins">0</strong>
         </div>
+        <div class="stat" title="Estimated earnings of your workers while the business runs">
+          <span class="stat-label">Workers</span>
+          <strong id="stat-income">—</strong>
+        </div>
         <div class="stat" title="Species discovered">
           <span class="stat-label">Collection</span>
           <strong id="stat-collection">0/15</strong>
@@ -38,52 +42,64 @@
     <div id="banners" class="banners" role="status" aria-live="polite"></div>
 
     <nav class="tabs" aria-label="Sections">
-      <button type="button" class="tab" id="tab-fishing" data-panel="fishing" aria-controls="panel-fishing" aria-selected="true">Fishing</button>
+      <button type="button" class="tab" id="tab-dock" data-panel="dock" aria-controls="panel-dock" aria-selected="true">Dock</button>
+      <button type="button" class="tab" id="tab-fish" data-panel="fish" aria-controls="panel-fish" aria-selected="false">Fish Yourself</button>
       <button type="button" class="tab" id="tab-collection" data-panel="collection" aria-controls="panel-collection" aria-selected="false">Collection</button>
       <button type="button" class="tab" id="tab-tackle" data-panel="tackle" aria-controls="panel-tackle" aria-selected="false">Tackle &amp; Upgrades</button>
     </nav>
 
     <main>
-      <section class="panel" id="panel-fishing" aria-labelledby="tab-fishing">
+      <section class="panel" id="panel-dock" aria-labelledby="tab-dock">
         <div class="fishing-grid">
           <div class="scene-wrap">
-            <div class="scene" id="scene" role="img" aria-label="Fishing scene"></div>
+            <div class="scene" id="scene" role="img" aria-label="Fishing dock scene"></div>
             <p class="scene-caption" id="scene-caption"></p>
           </div>
 
           <div class="control-card">
             <div class="control-head">
-              <h2 id="control-location">Stillwater Pond</h2>
+              <h2 id="control-location"></h2>
               <p class="muted" id="control-setup"></p>
             </div>
 
-            <div class="cast">
-              <div class="cast-bar" role="progressbar" aria-labelledby="cast-label" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="cast-bar">
-                <div class="cast-fill" id="cast-fill"></div>
-              </div>
-              <p class="cast-line" id="cast-label">Ready to cast.</p>
-            </div>
-
             <div class="control-actions">
-              <button type="button" class="btn btn-primary" id="toggle-fishing">Start Fishing</button>
-              <button type="button" class="btn btn-ghost" id="goto-tackle">Upgrades</button>
+              <button type="button" class="btn btn-primary" id="toggle-fishing">Pause business</button>
             </div>
 
             <dl class="mini-stats">
               <div><dt>Casts</dt><dd id="mini-casts">0</dd></div>
               <div><dt>Fish landed</dt><dd id="mini-catches">0</dd></div>
               <div><dt>Coins earned</dt><dd id="mini-earned">0</dd></div>
-              <div><dt>Time fishing</dt><dd id="mini-time">0m</dd></div>
+              <div><dt>Time running</dt><dd id="mini-time">0m</dd></div>
             </dl>
           </div>
         </div>
 
+        <div id="dock-body" class="dock-body"></div>
+
         <div class="recent-block">
           <div class="block-head">
             <h3>Recent catches</h3>
-            <span class="muted" id="recent-note">Catches are sold automatically.</span>
+            <span class="muted">All catches sell automatically — workers' and yours.</span>
           </div>
           <ol class="recent" id="recent-list"></ol>
+        </div>
+      </section>
+
+      <section class="panel" id="panel-fish" aria-labelledby="tab-fish" hidden>
+        <div class="fishing-grid">
+          <div class="scene-wrap">
+            <div class="scene" id="scene-player" role="img" aria-label="Your fishing spot"></div>
+            <p class="scene-caption">Your own line — workers keep fishing meanwhile.</p>
+            <div class="scene scene-preview" aria-hidden="true">
+              <div class="reel-track reel-track-static">
+                <div class="reel-target" style="left:36%; width:28%"></div>
+                <div class="reel-marker" style="left:44%"></div>
+              </div>
+              <p class="muted reel-preview-caption">The reel track: tap when the gold marker is in the bright zone.</p>
+            </div>
+          </div>
+          <div class="control-card" id="fish-body"></div>
         </div>
       </section>
 

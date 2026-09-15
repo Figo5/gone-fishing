@@ -180,6 +180,59 @@ export const BAITS = [
 
 export const DEFAULT_SETUP = { locationId: 'loc_pond', rodId: 'rod_bamboo', baitId: 'bait_worms' };
 
+/* ------------------------------------------------------------------ *
+ * Tycoon economy (schema v2). All prices and effects live here.        *
+ * ------------------------------------------------------------------ */
+
+/** Hire costs indexed by the worker's number: worker 1 and 2 are free, 3..6 cost coins. */
+export const HIRE_COSTS = [0, 0, 0, 900, 2600, 7000, 18000];
+
+/** Dock expansions. dockLevel i allows capacity CAPACITIES[i]; level 0 fits two workers. */
+export const DOCK_LEVELS = [
+  { capacity: 2, cost: 0, name: 'Old Jetty' },
+  { capacity: 3, cost: 1500, name: 'Reinforced Jetty' },
+  { capacity: 4, cost: 6000, name: 'Wooden Dock' },
+  { capacity: 5, cost: 16000, name: 'Long Dock' },
+  { capacity: 6, cost: 40000, name: 'Fishing Wharf' },
+];
+
+/** Fish stall levels: finite, modest sale-value improvements on every catch. */
+export const STALL_LEVELS = [
+  { mult: 1, cost: 0, name: 'Crate on a Barrel' },
+  { mult: 1.1, cost: 1200, name: 'Proper Fish Stall' },
+  { mult: 1.2, cost: 5000, name: 'Iced Display Stall' },
+  { mult: 1.3, cost: 15000, name: 'Dockside Market' },
+];
+
+/** Player fishing: marker sweep per reel stage and the quality bonus curves. */
+export const PLAYER_CAST = {
+  stages: 3,
+  sweepMs: 1700,
+  center: 0.5, // target-zone centre on the marker track (fraction)
+  halfWidth: 0.14, // half-width of the target zone; inside = hit
+  /** Sale-value multiplier from average input quality, 0 (all misses) .. 1 (all perfect). */
+  valueBonus: (q) => 1 + 0.6 * q,
+  /** Size multiplier from average input quality (feeds records and trophies). */
+  sizeBonus: (q) => 1 + 0.35 * q,
+  /** Hard cap on a player catch's stall value, in worker-average catches at the pond.
+   *  Keeps hands-on play a strong boost (≈2 workers' worth per attempt) without making
+   *  hired workers irrelevant at endgame. */
+  valueCapWorkerCasts: 2,
+  /** Quality credited when the player never taps (accessible route / abandoned). */
+  idleQuality: 0.4,
+  /** Marker sweep speed if the game runs on rAF time rather than wall clock. */
+  markerLoops: 1,
+};
+
+/** Contract templates. A generated contract stores template + concrete params. */
+export const CONTRACT_TEMPLATES = [
+  { id: 'qty_location', kind: 'qty', label: 'Stock the stall' },
+  { id: 'size_location', kind: 'size', label: 'Specimen hunt' },
+  { id: 'rarity_any', kind: 'rarity', label: 'Quality order' },
+];
+
+export const CONTRACT_REWARD_MULT = 9; // reward ≈ 9× a typical catch's value, scaled by effort
+
 const SPECIES_BY_ID = new Map(SPECIES.map((s) => [s.id, s]));
 const ROD_BY_ID = new Map(RODS.map((r) => [r.id, r]));
 const BAIT_BY_ID = new Map(BAITS.map((b) => [b.id, b]));
