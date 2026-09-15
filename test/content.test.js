@@ -42,14 +42,18 @@ import {
 
 const T0 = 1_700_000_000_000;
 
-test('content shape matches the design: three locations, five ordered species each', () => {
-  assert.equal(LOCATIONS.length, 3);
-  assert.deepEqual(LOCATIONS.map((l) => l.id), ['loc_pond', 'loc_river', 'loc_lake']);
+test('content shape: six locations, five ordered species each, thirty species total', () => {
+  assert.equal(LOCATIONS.length, 6);
+  assert.deepEqual(LOCATIONS.map((l) => l.id), ['loc_pond', 'loc_river', 'loc_lake', 'loc_cedar', 'loc_frost', 'loc_mere']);
   assert.equal(LOCATIONS[0].cost, 0, 'the first location is free');
   assert.ok(LOCATIONS[1].cost > 0 && LOCATIONS[2].cost > LOCATIONS[1].cost, 'later water costs more');
+  for (const location of LOCATIONS.slice(3)) {
+    assert.equal(location.cost, 0, `${location.name} is a prestige pond, not bought`);
+    assert.ok(location.prestige >= 1 && location.prestige <= 3);
+  }
 
-  assert.equal(SPECIES.length, 15);
-  assert.equal(new Set(SPECIES.map((s) => s.id)).size, 15, 'species ids are unique');
+  assert.equal(SPECIES.length, 30);
+  assert.equal(new Set(SPECIES.map((s) => s.id)).size, 30, 'species ids are unique');
 
   for (const location of LOCATIONS) {
     const pool = speciesByLocation(location.id);
@@ -72,6 +76,16 @@ test('content shape matches the design: three locations, five ordered species ea
   };
   assert.ok(meanValue('loc_river') > meanValue('loc_pond') * 1.5);
   assert.ok(meanValue('loc_lake') > meanValue('loc_river') * 1.5);
+  // Prestige ponds pay progressively more than the pond before them.
+  assert.ok(meanValue('loc_cedar') > meanValue('loc_pond') * 4);
+  assert.ok(meanValue('loc_frost') > meanValue('loc_cedar') * 2);
+  assert.ok(meanValue('loc_mere') > meanValue('loc_frost') * 2);
+});
+
+test('prestige ponds are gated by prestige count, not coins', () => {
+  for (const location of LOCATIONS.filter((l) => l.prestige)) {
+    assert.equal(location.cost, 0, `${location.id} must not be purchasable`);
+  }
 });
 
 test('base probability distribution is 58/28/10/3.5/0.5 and sums to one', () => {
@@ -85,15 +99,22 @@ test('base probability distribution is 58/28/10/3.5/0.5 and sums to one', () => 
   }
 });
 
-test('equipment list: four rods, three permanent baits, none strictly dominant', () => {
-  assert.equal(RODS.length, 4);
+test('equipment list: eight rods, five baits, prestige tiers gate the top end', () => {
+  assert.equal(RODS.length, 8);
   assert.equal(RODS[0].cost, 0);
-  assert.deepEqual(RODS.map((r) => r.castSeconds), [20, 16, 12, 9]);
   for (let i = 1; i < RODS.length; i += 1) {
-    assert.ok(RODS[i].cost > RODS[i - 1].cost && RODS[i].castSeconds < RODS[i - 1].castSeconds);
+    assert.ok(RODS[i].cost > RODS[i - 1].cost, 'rods get pricier');
+  }
+  for (const rod of RODS.filter((r) => r.prestige)) {
+    assert.ok(rod.castSeconds <= 10, `${rod.id} is a prestige-tier speed upgrade`);
+  }
+  // Starter-pond rods stay available at prestige zero.
+  for (const rod of RODS.filter((r) => !r.prestige)) {
+    assert.ok(rod.cost <= 12000, `${rod.id} at ${rod.cost}`);
   }
 
-  assert.equal(BAITS.length, 3);
+  assert.equal(BAITS.length, 5);
+  assert.equal(BAITS.filter((b) => b.prestige).length, 2, 'two prestige-tier baits');
   const worms = BAITS.find((b) => b.id === 'bait_worms');
   assert.equal(worms.cost, 0 && worms.castMult, 1);
   assert.equal(worms.castMult, 1);
@@ -124,10 +145,10 @@ test('tycoon economy tables: six workers, five dock levels, four stall levels', 
   assert.equal(DOCK_LEVELS[DOCK_LEVELS.length - 1].capacity, 6, 'six workers at most');
 
   assert.equal(STALL_LEVELS[0].mult, 1);
-  assert.equal(STALL_LEVELS.length, 4, 'a small finite number of stall levels');
+  assert.equal(STALL_LEVELS.length, 5, 'five stall levels');
   for (let i = 1; i < STALL_LEVELS.length; i += 1) {
     assert.ok(STALL_LEVELS[i].mult > STALL_LEVELS[i - 1].mult, 'stall improves sales');
-    assert.ok(STALL_LEVELS[i].mult <= 1.3, 'the improvement stays modest');
+    assert.ok(STALL_LEVELS[i].mult <= 1.45, 'each step stays a modest jump');
   }
 });
 

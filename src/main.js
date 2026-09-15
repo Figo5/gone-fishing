@@ -14,17 +14,22 @@ import {
   assignWorker,
   cancelPlayerCast,
   createNewState,
+  earningsMultiplier,
   expandDock,
   generateContracts,
   hireWorker,
+  performPrestige,
+  prestigeEligibility,
   purchaseBait,
   purchaseLocation,
   settlePlayerCast,
   setPaused,
   startPlayerCast,
   submitPlayerInput,
+  upgradeReelControl,
   upgradeRod,
   upgradeStall,
+  upgradeTraining,
   workerEstimate,
 } from './engine.js';
 import { seedFromTime } from './rng.js';
@@ -38,6 +43,7 @@ import {
 } from './save.js';
 import { renderCollection, renderTackle } from './panels.js';
 import { renderDockPanel } from './dock.js';
+import { renderPrestige, prestigeConfirmBody } from './prestige.js';
 import { qualityFromElapsed, renderFishPanel } from './fishing.js';
 import { sceneSvg } from './scene.js';
 import {
@@ -132,6 +138,7 @@ function boot({ readOnly = false } = {}) {
 function renderAll() {
   renderHeader(state, estimateIncome());
   renderScene(state);
+  if (activePanel === 'prestige') renderPrestigePanel();
   renderScenePlayer();
   renderControls(state);
   renderRecent(state);
@@ -143,6 +150,8 @@ function renderAll() {
 
 /** The player's own fishing spot (same palette logic, own element). */
 let scenePlayerKey = null;
+const LOCATION_SCENE = { loc_pond: 'pond', loc_river: 'river', loc_lake: 'lake', loc_cedar: 'cedar', loc_frost: 'frost', loc_mere: 'mere' };
+
 function renderScenePlayer() {
   const el = document.getElementById('scene-player');
   if (!el) return;
@@ -150,7 +159,7 @@ function renderScenePlayer() {
   const key = `${shown}|${state.dockLevel}|${state.stallLevel}`;
   if (key === scenePlayerKey) return;
   scenePlayerKey = key;
-  const sceneLocation = { scene: shown === 'loc_pond' ? 'pond' : shown === 'loc_river' ? 'river' : 'lake' };
+  const sceneLocation = { scene: LOCATION_SCENE[shown] || 'pond' };
   el.innerHTML = sceneSvg(sceneLocation, {
     workers: 0,
     dockLevel: state.dockLevel,
@@ -291,13 +300,18 @@ function selectedTab(panel) {
   for (const tab of document.querySelectorAll('.tab')) {
     tab.setAttribute('aria-selected', String(tab.dataset.panel === panel));
   }
-  for (const id of ['dock', 'fish', 'collection', 'tackle']) {
+  for (const id of ['dock', 'fish', 'collection', 'tackle', 'prestige']) {
     document.getElementById(`panel-${id}`).hidden = id !== panel;
   }
   if (panel === 'dock') renderDock();
   if (panel === 'fish') renderFishBody(Date.now());
   if (panel === 'collection') renderCollection(state);
   if (panel === 'tackle') renderTackle(state);
+  if (panel === 'prestige') renderPrestigePanel();
+}
+
+function renderPrestigePanel() {
+  els.prestigeBody.innerHTML = renderPrestige(state);
 }
 
 document.querySelectorAll('.tab').forEach((tab) => {
@@ -314,7 +328,7 @@ els.toggle.addEventListener('click', () => {
 
 document.addEventListener('click', (event) => {
   const target = event.target.closest(
-    '[data-invest],[data-assign-location],[data-assign-bait],[data-buy-rod],[data-buy-bait],[data-buy-location],[data-player-bait],[data-player-location],[data-cast],[data-reel],[data-cancel-cast],[data-calm-reel],[data-accept],[data-abandon],[data-refresh-board]',
+    '[data-invest],[data-assign-location],[data-assign-bait],[data-buy-rod],[data-buy-bait],[data-buy-location],[data-player-bait],[data-player-location],[data-cast],[data-reel],[data-cancel-cast],[data-calm-reel],[data-accept],[data-abandon],[data-refresh-board],[data-buy-training],[data-buy-reel],[data-prestige-open]',
   );
   if (!target) return;
   const now = Date.now();
@@ -380,7 +394,7 @@ document.addEventListener('click', (event) => {
   } else if (target.hasAttribute('data-reel')) {
     const now2 = Date.now();
     const elapsed = now2 - (state.player.active?.stageStart || now2);
-    const q = qualityFromElapsed(elapsed);
+    const q = qualityFromElapsed(elapsed, state);
     const submit = submitPlayerInput(state, now2, q);
     if (submit.ok && submit.complete) {
       const settled = settlePlayerCast(state, now2, false);
@@ -400,6 +414,58 @@ document.addEventListener('click', (event) => {
     }
     renderFishBody(now);
     needRender = false;
+  }
+
+  // --- training and reel control
+  else if (target.hasAttribute('data-buy-training')) {
+    const result = upgradeTraining(state, now);
+    if (!result.ok && result.reason === 'insufficient_coins') {
+      banner(`Not enough coins yet — you need ${formatCoins(result.missing)} more.`, 'warn', 'invest');
+      needRender = false;
+    }
+  } else if (target.hasAttribute('data-buy-reel')) {
+    const result = upgradeReelControl(state, now);
+    if (!result.ok && result.reason === 'insufficient_coins') {
+      banner(`Not enough coins yet — you need ${formatCoins(result.missing)} more.`, 'warn', 'invest');
+      needRender = false;
+    }
+  }
+
+  // --- prestige confirmation opener (actual prestige happens after confirm)
+  else if (target.hasAttribute('data-prestige-open')) {
+    const el = prestigeEligibility(state);
+    if (!el.eligible) {
+      banner('Requirements are not met yet — nothing happened.', 'warn', 'prestige');
+      needRender = false;
+    } else {
+      openConfirm({
+        title: 'Move the business to a new pond?',
+        text: '', // replaced below with rich body
+        confirmLabel: 'Move and prestige',
+        onConfirm: () => {
+          // Recheck eligibility against the authoritative state at confirm time.
+          const now2 = Date.now();
+          advanceState(state, now2); // settle old-run time under old bonuses
+          const result = performPrestige(state, now2);
+          if (!result.ok) {
+            banner('Prestige requirements changed — nothing was reset.', 'error', 'prestige');
+            return;
+          }
+          dirty = true;
+          persist(true, { backupRaw: JSON.stringify(state), wasMigrated: false });
+          renderAll();
+          banner(
+            `Prestige ${result.count}! The business moved to <strong>${result.destination.location.name}</strong>.
+             Permanent earnings multiplier is now <strong>${earningsMultiplier(state).toFixed(2)}×</strong>.`,
+            'warn', 'prestige-done',
+          );
+          setTimeout(() => clearBanner('prestige-done'), 12000);
+        },
+      });
+      // Inject the rich body (openConfirm sets plain text).
+      document.getElementById('confirm-text').innerHTML = prestigeConfirmBody(state);
+      needRender = false;
+    }
   }
 
   // --- player gear / location selection
@@ -507,7 +573,7 @@ document.addEventListener('keydown', (event) => {
   if (event.repeat) return; // held keys cannot spam stages
   const now = Date.now();
   const elapsed = now - state.player.active.stageStart;
-  const q = qualityFromElapsed(elapsed);
+  const q = qualityFromElapsed(elapsed, state);
   const submit = submitPlayerInput(state, now, q);
   if (submit.ok && submit.complete) {
     const settled = settlePlayerCast(state, now, false);

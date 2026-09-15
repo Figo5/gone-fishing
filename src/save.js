@@ -8,9 +8,12 @@
  */
 
 import {
+  BAITS,
   DOCK_LEVELS,
   HIRE_COSTS,
+  LOCATIONS,
   PLAYER_CAST,
+  RODS,
   RECENT_LIMIT,
   SCHEMA_VERSION,
   SPECIES,
@@ -22,7 +25,8 @@ import { createNewState, createWorker } from './engine.js';
 
 export const SCHEMA_VERSION_V1 = 1;
 export const SCHEMA_VERSION_V2 = 2;
-export const CURRENT_SCHEMA_VERSION = SCHEMA_VERSION_V2;
+export const SCHEMA_VERSION_V3 = 3;
+export const CURRENT_SCHEMA_VERSION = SCHEMA_VERSION_V3;
 export { SCHEMA_VERSION };
 
 export const SAVE_KEY = 'gone-fishing.save.v1';
@@ -31,9 +35,9 @@ export const CORRUPT_KEY_PREFIX = 'gone-fishing.corrupt.';
 export const LOCK_KEY = 'gone-fishing.writer';
 
 const SPECIES_IDS = new Set(SPECIES.map((s) => s.id));
-const ROD_IDS = new Set(['rod_bamboo', 'rod_fiberglass', 'rod_carbon', 'rod_pro']);
-const BAIT_IDS = new Set(['bait_worms', 'bait_minnows', 'bait_glow']);
-const LOCATION_IDS = new Set(['loc_pond', 'loc_river', 'loc_lake']);
+const ROD_IDS = new Set(RODS.map((r) => r.id));
+const BAIT_IDS = new Set(BAITS.map((b) => b.id));
+const LOCATION_IDS = new Set(LOCATIONS.map((l) => l.id));
 
 const FINITE = (v) => typeof v === 'number' && Number.isFinite(v);
 const NON_NEG = (v) => FINITE(v) && v >= 0;
@@ -90,12 +94,13 @@ export function validateState(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     return { ok: false, errors: ['Save is not an object.'] };
   }
-  if (input.schemaVersion !== SCHEMA_VERSION_V2) {
+  if (input.schemaVersion !== SCHEMA_VERSION_V2 && input.schemaVersion !== SCHEMA_VERSION_V3) {
     return {
       ok: false,
-      errors: [`Unsupported save schema version: ${String(input.schemaVersion)} (expected ${SCHEMA_VERSION_V2}).`],
+      errors: [`Unsupported save schema version: ${String(input.schemaVersion)} (expected ${SCHEMA_VERSION_V2} or ${SCHEMA_VERSION_V3}).`],
     };
   }
+  const isV3 = input.schemaVersion === SCHEMA_VERSION_V3;
 
   if (!NON_NEG_INT(input.coins)) fail('coins must be a non-negative integer.');
   if (!NON_NEG_INT(input.lifetimeCatches)) fail('lifetimeCatches must be a non-negative integer.');
@@ -197,6 +202,24 @@ export function validateState(input) {
     }
   }
 
+  // v3 prestige/business-training fields (required for v3, defaulted for v2).
+  if (isV3) {
+    if (!input.prestige || typeof input.prestige !== 'object') {
+      fail('prestige block is missing.');
+    } else {
+      const pr = input.prestige;
+      if (!NON_NEG_INT(pr.count)) fail('prestige.count must be a non-negative integer.');
+      if (!NON_NEG(pr.runEarnings)) fail('prestige.runEarnings must be non-negative.');
+      if (!NON_NEG(pr.lastPrestigeAt)) fail('prestige.lastPrestigeAt must be non-negative.');
+      if (!LOCATION_IDS.has(pr.homePondId)) fail(`prestige.homePondId unknown: ${String(pr.homePondId)}.`);
+      if (NON_NEG_INT(pr.count) && pr.count > 1000) fail('prestige.count is implausibly large.');
+    }
+    if (!NON_NEG_INT(input.trainingLevel)) fail('trainingLevel must be a non-negative integer.');
+    if (!NON_NEG_INT(input.reelControlLevel)) fail('reelControlLevel must be a non-negative integer.');
+    if (INT(input.trainingLevel) && input.trainingLevel > 3) fail('trainingLevel out of range.');
+    if (INT(input.reelControlLevel) && input.reelControlLevel > 3) fail('reelControlLevel out of range.');
+  }
+
   // Collection + recent (same shape as v1).
   if (!input.collection || typeof input.collection !== 'object' || Array.isArray(input.collection)) {
     fail('collection must be an object.');
@@ -235,17 +258,45 @@ export function validateState(input) {
  * ------------------------------------------------------------------ */
 
 /**
- * Migrate a validated v1 save to v2.
+ * Migrate a validated v2 save to v3 (prestige + new business upgrades).
+ * - prestigeCount starts at 0, multiplier 1: updating must not force a prestige.
+ * - runEarnings is seeded from lifetimeCoins, the only trustworthy pre-existing
+ *   earnings counter. This may understate a long-lived run (lifetime coins count
+ *   every previous minute of play), but it never fabricates earnings from wallet
+ *   balance or purchase history. Documented fallback per spec.
+ * - trainingLevel and reelControlLevel start at 0 (the new systems begin fresh;
+ *   their tiers are usable immediately).
+ * Idempotent for v3 input.
+ */
+export function migrateV2toV3(v2) {
+  if (!v2 || typeof v2 !== 'object') throw new Error('migrateV2toV3 needs a state object');
+  if (v2.schemaVersion === SCHEMA_VERSION_V3 && v2.prestige) return { state: v2, migrated: false };
+
+  const v3 = JSON.parse(JSON.stringify(v2));
+  v3.schemaVersion = SCHEMA_VERSION_V3;
+  v3.prestige = {
+    count: 0,
+    runEarnings: Math.max(0, Math.floor(v2.lifetimeCoins || 0)),
+    lastPrestigeAt: 0,
+    homePondId: 'loc_pond',
+  };
+  v3.trainingLevel = 0;
+  v3.reelControlLevel = 0;
+  return { state: v3, migrated: true };
+}
+
+/**
+ * Migrate a validated v1 save to v2 (the dock business).
  * - The v1 automatic fisher becomes worker 1 with the same location/bait.
  * - The v1 fractional cast progress becomes that worker's fractional progress.
  * - Coins, gear, unlocks, collection and lifetime records are preserved exactly.
  * - The player block starts fresh (zero casts) — no invented offline player catches.
  * - The paused flag mirrors the v1 `fishing` state.
- * Idempotent: running it on a v2 state is a no-op.
+ * Idempotent: running it on a v2/v3 state is a no-op.
  */
 export function migrateV1toV2(v1) {
   if (!v1 || typeof v1 !== 'object') throw new Error('migrateV1toV2 needs a state object');
-  if (v1.schemaVersion === SCHEMA_VERSION_V2) return { state: v1, migrated: false };
+  if (v1.schemaVersion !== SCHEMA_VERSION_V1) return { state: v1, migrated: false };
 
   const stamp = Math.floor(v1.processedAt) || 0;
   const v2 = createNewState(stamp, 1);
@@ -280,6 +331,15 @@ export function migrateV1toV2(v1) {
   v2.player.rngState = ((v1.rngState ^ 0x9e3779b9) >>> 0) || 1;
   v2.contract.rngState = ((v1.rngState ^ 0xc0ffee) >>> 0) || 1;
 
+  // createNewState now emits v3 directly; seed run earnings from the only
+  // trustworthy counter (see migrateV2toV3's note).
+  v2.prestige = {
+    count: 0,
+    runEarnings: Math.max(0, Math.floor(v1.lifetimeCoins || 0)),
+    lastPrestigeAt: 0,
+    homePondId: 'loc_pond',
+  };
+
   return { state: v2, migrated: true };
 }
 
@@ -302,23 +362,34 @@ export function deserialize(text) {
     return { ok: false, errors: ['Save is not an object.'] };
   }
 
+  if (parsed.schemaVersion === SCHEMA_VERSION_V3) {
+    const checked = validateState(parsed);
+    return checked.ok ? { ok: true, state: checked.state, migrated: false, fromVersion: 3 } : checked;
+  }
   if (parsed.schemaVersion === SCHEMA_VERSION_V2) {
     const checked = validateState(parsed);
-    return checked.ok ? { ok: true, state: checked.state, migrated: false, fromVersion: 2 } : checked;
-  }
-  if (parsed.schemaVersion === SCHEMA_VERSION_V1) {
-    const checked = validateV1(parsed);
     if (!checked.ok) return checked;
-    const { state, migrated } = migrateV1toV2(checked.value);
+    const { state, migrated } = migrateV2toV3(checked.state);
     const rechecked = validateState(state);
     if (!rechecked.ok) {
       return { ok: false, errors: ['Migration produced an invalid state.', ...rechecked.errors] };
     }
-    return { ok: true, state: rechecked.state, migrated, fromVersion: 1 };
+    return { ok: true, state: rechecked.state, migrated, fromVersion: 2 };
+  }
+  if (parsed.schemaVersion === SCHEMA_VERSION_V1) {
+    const checked = validateV1(parsed);
+    if (!checked.ok) return checked;
+    const toV2 = migrateV1toV2(checked.value);
+    const toV3 = migrateV2toV3(toV2.state);
+    const rechecked = validateState(toV3.state);
+    if (!rechecked.ok) {
+      return { ok: false, errors: ['Migration produced an invalid state.', ...rechecked.errors] };
+    }
+    return { ok: true, state: rechecked.state, migrated: true, fromVersion: 1 };
   }
   return {
     ok: false,
-    errors: [`Unsupported save schema version: ${String(parsed.schemaVersion)} (expected 1 or ${SCHEMA_VERSION_V2}).`],
+    errors: [`Unsupported save schema version: ${String(parsed.schemaVersion)} (expected 1, ${SCHEMA_VERSION_V2}, or ${SCHEMA_VERSION_V3}).`],
   };
 }
 

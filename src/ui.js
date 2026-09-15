@@ -44,6 +44,7 @@ export const els = {
   tackleBody: $('tackle-body'),
   dockBody: $('dock-body'),
   fishBody: $('fish-body'),
+  prestigeBody: $('prestige-body'),
   awayShell: $('away-shell'),
   awayBody: $('away-body'),
   settingsShell: $('settings-shell'),
@@ -128,6 +129,8 @@ function sceneDescription(state, shownLocationId) {
   return `Dock scene: ${dockName(state)}, ${state.workers.length} fishing station${state.workers.length === 1 ? '' : 's'} (${parts.join(', ')}), fish stall level ${state.stallLevel}.`;
 }
 
+const LOCATION_SCENE = { loc_pond: 'pond', loc_river: 'river', loc_lake: 'lake', loc_cedar: 'cedar', loc_frost: 'frost', loc_mere: 'mere' };
+
 export function renderScene(state) {
   // The scene shows the dock: the location the player is fishing at, or the
   // busiest worker location if the player is somewhere unstarted.
@@ -142,7 +145,7 @@ export function renderScene(state) {
   if (key === sceneKey) return;
   sceneKey = key;
 
-  const sceneLocation = { scene: shown === 'loc_pond' ? 'pond' : shown === 'loc_river' ? 'river' : 'lake' };
+  const sceneLocation = { scene: LOCATION_SCENE[shown] || 'pond' };
   els.scene.innerHTML = sceneSvg(sceneLocation, {
     workers: state.workers.length,
     dockLevel: state.dockLevel,

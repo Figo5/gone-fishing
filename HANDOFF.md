@@ -1,86 +1,96 @@
-# HANDOFF — Gone Fishing (tycoon + active fishing update)
+# HANDOFF — Gone Fishing (prestige + new ponds update)
 
-Branch `gameplay/tycoon-active-fishing` on top of `main` (`caecef0`). Not pushed, merged or
-deployed. The previous release is the Netlify-deployed idle loop; this update adds a worker
-business, an optional hands-on minigame, and contracts, in response to "all I can do is let
-it sit."
+Branch `gameplay/tycoon-active-fishing` (commit `9c4d82c` was the tycoon baseline; this update
+sits on top). Not merged to `main`, not deployed to production; the update is pushed only to
+update the open PR #1 preview.
 
 ## What changed
 
-- **Business (schema v2).** Up to 6 workers, each with its own location, bait, RNG stream and
-  fractional cast progress. Dock levels gate capacity (2→6); stall levels multiply all sales
-  (1.0→1.3, three paid levels); rod upgrades are shared by every worker and the player. Worker 2
-  is free; 3–6 cost coins. All prices/effects live in `src/data.js` (`HIRE_COSTS`, `DOCK_LEVELS`,
-  `STALL_LEVELS`). The scene grows: extra stations per worker, longer dock, bigger stall, and
-  labeled boats for workers fishing other waters.
-- **Fish Yourself.** Cast → up to three reel-timing taps against a moving marker → catch settles
-  once. Quality 0..1 per tap; missed taps or the "Take an ordinary fish" button settle at a fixed
-  0.4 quality. Payouts are capped at 2× a worker's average catch (`PLAYER_CAST.valueCapWorkerCasts`)
-  so perfect play ≈1.3× a worker per attempt and auto ≈0.9× — a boost, not a takeover. Separate
-  player RNG stream; canceled casts (hide/pause/tab switch) drop safely with no penalty and no
-  offline simulation of hand catches.
-- **Contracts.** Board of three offers from unlocked content only (pond quantities, size hunts on
-  common/uncommon fish, Uncommon/Rare-or-better). One accepted at a time, progress only from
-  post-acceptance catches (workers or hand), bonus paid exactly once on top of normal sales,
-  abandon without penalty, fresh board on demand — never auto-accepted while away.
+- **Prestige (schema v3).** Voluntary "move to a new pond" on its own tab. Requirements:
+  run earnings ≥ threshold (250,000 base, +350,000 per prestige) **and** ≥ 4 workers. Reward:
+  permanent multiplier `1 + 0.25 × prestigeCount`, applied exactly once to worker sales, manual
+  sales and contract bonuses (contract rewards are stored unboosted; settlement applies the
+  multiplier once). Unlocks Cedar Hollow (P1), Frostwater Basin (P2), Starlight Mere (P3); later
+  prestiges settle on an unlocked pond and grant the next multiplier. Preserved: collection,
+  lifetime records, unlocked waters, prestige count, tier access, pause flag. Reset: coins → 0,
+  crew → one free worker at the destination pond, dock/stall/training/reels → level 1, rods/bait
+  → starters, contract cleared. The transition is atomic (`performPrestige`), rechecks
+  eligibility at confirm time, voids any unfinished hand cast without penalty, resets
+  `processedAt` so no old absence can be replayed at the new multiplier, and starts the new run
+  from a different RNG seed (no identical early sequence each run).
+- **Three new ponds, fifteen new fish** (thirty total): Cedar Hollow (Pumpkinseed → Ember Pike),
+  Frostwater Basin (Arctic Char → Aurora Trout), Starlight Mere (Glimmerdace → Mere Avatar).
+  New scene palettes in the existing SVG system. Immediately playable with starter gear.
+- **More upgrades:** 8 rods (4 prestige-tier), 5 stall levels (to ×1.45), 5 baits (Cedar
+  Berries: bigger fish, near-full speed, flat rarity odds; Moonmote: best rarity odds, ×1.3
+  cast), 3 crew-training levels (×0.92/×0.85/×0.78 cast time, floor 5s), 3 reel-control levels
+  (target half-width 0.14→0.26). Prestige tiers gate availability; purchases stay in-run.
+  The manual payout cap now scales with the water being fished, not always the pond.
+- **Migration v2→v3** (and v1→v3): prestigeCount 0, multiplier 1, training/reel level 0;
+  run earnings seeded from lifetimeCoins (the only trustworthy counter — never fabricated from
+  wallet or purchases). Repeat-safe; imports replace state.
 
 ## Files
 
-`src/engine.js` (all simulation), `src/data.js` (all tuning), `src/save.js` (v1→v2 migration +
-validation), `src/dock.js`, `src/fishing.js`, `src/scene.js` (growing dock), `src/ui.js`,
-`src/panels.js`, `src/main.js`. Tests: `test/engine.test.js`, `test/save.test.js`,
-`test/content.test.js`. Simulation: `tools/simulate.mjs`.
+`src/data.js` (content + tuning), `src/engine.js` (simulation + prestige), `src/save.js`
+(v3 validation + v2→v3), `src/prestige.js` (New Pond panel), `src/scene.js` (six palettes),
+`src/panels.js` (gear gating + training/reel), plus prior files. Tests: `test/prestige.test.js`
+(new), updated `test/{content,engine,save}.test.js`.
 
 ## Tests and results
 
 ```
-npm test          # node --test test/*.test.js → tests 39, pass 39, fail 0
-npm run simulate  # idle vs active policies over five seeds
+npm test   # node --test test/*.test.js → tests 54, pass 54, fail 0
+npm run simulate
 ```
 
-New coverage: v1→v2 migration (coins/gear/collection preserved; fisher becomes worker 1 with the
-same stream and fractional progress; `fishing` → pause; player/contracts start fresh; idempotent
-re-import; backup written once; invalid v1 rejected), hire/capacity/affordability, assignments
-across locations, no retroactive earnings on any purchase or assignment, batched vs incremental
-multi-worker determinism (identical coins, per-worker catches/progress/streams), 8h cap across
-workers, pause, backward clock, player settle exactly once + cancel safety + auto-settle floor,
-contract eligibility/post-acceptance counting/one-time bonus, save/reload of contracts.
+New coverage: eligibility (both milestones, live state), spending does not undo run earnings,
+threshold scaling, exact reset/preserve lists, unlock-once, duplicate-claim prevention,
+additive multiplier across all three reward paths, no retroactive offline earnings after
+prestige, manual-cast voiding, contract eligibility never references locked ponds, training/
+reel purchases, post-prestige import, malformed v3 rejection, multi-worker determinism with
+training + multiplier, v2→v3 migration and idempotency.
 
-## Balance (measured, `npm run simulate`, 3h, five seeds)
+## Simulation (fixed seeds 1/42/90210, 24h horizon, 5-min check-ins)
 
-Idle-only (policy: hire → dock → stall as affordable): reaches 6 workers/dock 4/stall 3 within
-~1.5h, then ≈128k coins banked. Active 12 casts/h (perfect play) on top: ≈310k banked with
-earlier bait/rod/location purchases. Active + contracts: ≈325k and contract 1 accepted in the
-first seconds. So active play roughly doubles early income and speeds every purchase; idle-only
-still completes the whole progression — nothing requires hand play. First purchase within
-~2–4 min of active play; several choices and a visible dock change within 10–15 min.
+- Idle-only (hire → dock → stall → training → rod → bait → river; no contracts, no hand casts):
+  prestige 1 at ~115 min, prestige 2 at ~200 min, prestige 3 at ~260 min.
+- Idle + contracts: ~110/195/250 min.
+- Active (12 hand casts/h, quality 0.8) + contracts: ~110/190/240 min (48–49 casts).
+- Assumptions: check-ins spend greedily but never prestige early; hand casts at 0.8 quality;
+  no multi-tab or offline catch-up modeled. Earlier thresholds (150k/+125k) allowed reset chains
+  within minutes and were rejected; 250k/+350k gives a first prestige in about two hours of
+  ordinary play, with later runs still shorter in feel because the multiplier compounds.
 
-## Verified in a real browser (Chromium 153 headless over CDP)
+## Browser verification (Chromium 153 headless over CDP)
 
-Five-minute fresh session: cast → reel ×3 → trophy Largemouth Bass 6.56 lb (new species) →
-cast again → contract offers shown → accepted "0/8 · bonus 858" → purchased Hire worker 2
-(free) → 90s of business income → pause froze coins exactly → reload restored 2 workers/
-contract state. Screenshots in `.browser-check/`. Worker assignment change requires a second
-location (correct on a fresh game; the select disables nothing but shows one option). Mobile
-375px: no horizontal overflow. Reduced motion: marker hidden, every tap scores a fair hit.
-Console: no errors in any run.
+Injected a played v2 save → migrated in place (coins/crew/dock/stall intact, prestige 0,
+training/reel 0, run earnings seeded). Prestige panel shows destination, both requirement
+progress bars, multiplier 1.00× → 1.25×, and the full reset/preserve disclosure. Confirm
+disabled until eligible; with an eligibility fixture the dialog opens, **Cancel leaves the
+game untouched**, and confirming performs prestige 1: coins 0, one worker at Cedar Hollow,
+dock/stall reset, Cedar Hollow unlocked, collection and lifetime records kept, success banner.
+A manual catch at the new pond (Redbreast Sunfish, new species) and tackle purchases work;
+rebuild items are affordable again while prestige-tier gear shows "Needs prestige N". Reload
+persists prestige 1; mobile 375px has no overflow with five tabs; no console errors.
 
-## Not verified / known issues
+Not verified: real background-tab throttling and Safari/Firefox (headless-only, same caveat as
+before); the success banner copy was checked via DOM, not visually proofread at length.
 
-- Real background-tab throttling (headless Chrome does not background non-active targets; the
-  visibility handler was exercised via a genuine `visibilitychange` event with `document.hidden`
-  stubbed). Safari/Firefox untested.
-- `window.__gfState`-style test hooks are not shipped; the browser harness mirrors saves via a
-  `setItem` interceptor (test-side only).
-- Player value cap scales from the pond's average even when fishing richer water — intentional
-  (keeps early river trips strong but bounded), worth revisiting if hand-fishing the lake feels
-  weak late-game.
-- Contract "rarity" offers accept any location by design; the UI says so.
+## Known limitations / notes
+
+- The fixture used in browser checks (topped-up run earnings + 4 workers) is test-side only;
+  no debug panel ships.
+- Later prestige cycles were modeled to prestige 3; the multiplier beyond x2.75 is untested
+  territory for balance.
+- Run-earnings seeding from lifetimeCoins may make a migrated veteran save prestige-ready
+  almost immediately on first load; the 4-worker requirement is the throttle there. Players
+  can simply not click the button.
 
 ## For the next agent
 
-Keep every random consumer on its own persisted stream (`worker.rngState`, `player.rngState`,
-`contract.rngState`) and keep `advanceState` the only time path — batching determinism and the
-offline cap are asserted by tests. Migrate schemas by adding a `validateV<n>` + `migrateV(n-1)→n`
-pair in `save.js` and bumping `CURRENT_SCHEMA_VERSION`; the backup-once flag lives under
-`gone-fishing.migrated.v3` style keys. Simulate before tuning prices: `npm run simulate`.
+Prestige thresholds/prices live in `PRESTIGE`, `DOCK_LEVELS`, `STALL_LEVELS`, `TRAINING_LEVELS`,
+`REEL_CONTROL_LEVELS`, `RODS`, `BAITS` in `src/data.js` — tune there, then `npm run simulate`.
+`performPrestige` mutates the state object in place (single identity); keep that property if
+you refactor. Save-id sets derive from content arrays, so new species/locations validate
+automatically. Keep `advanceState` the only time path.

@@ -25,8 +25,8 @@ if (typeof window !== 'undefined' && window.matchMedia) {
  * The marker bounces: it sweeps 0→1→0 over twice the sweep time, so the player can
  * catch it on the way back too.
  */
-export function qualityFromElapsed(elapsed) {
-  const { center, halfWidth } = stageTargetWindow();
+export function qualityFromElapsed(elapsed, state) {
+  const { center, halfWidth } = stageTargetWindow(state);
   const loop = PLAYER_CAST.sweepMs * 2;
   const phase = ((elapsed % loop) + loop) % loop;
   const t = phase <= PLAYER_CAST.sweepMs ? phase / PLAYER_CAST.sweepMs : 2 - phase / PLAYER_CAST.sweepMs;
@@ -39,6 +39,7 @@ export function qualityFromElapsed(elapsed) {
 
 /** Render the whole panel for the current player state. */
 export function renderFishPanel(state, now, opts = {}) {
+  const halfWidth = stageTargetWindow(state).halfWidth;
   const location = state.player.locationId;
   const game = state.player.active;
   const last = state.lastPlayerResult || opts.lastResult || null;
@@ -57,7 +58,7 @@ export function renderFishPanel(state, now, opts = {}) {
       <div class="reel-game" data-testid="reel-game">
         <p class="reel-stage">Reel! Stage ${stageNum} of ${game.stages}</p>
         <div class="reel-track" aria-hidden="true">
-          <div class="reel-target" style="left:${((stageTargetWindow().center - stageTargetWindow().halfWidth) * 100).toFixed(1)}%; width:${(stageTargetWindow().halfWidth * 200).toFixed(1)}%"></div>
+          <div class="reel-target" style="left:${((halfWidth && stageTargetWindow(state).center - halfWidth) * 100).toFixed(1)}%; width:${(halfWidth * 200).toFixed(1)}%"></div>
           ${reducedMotion ? '' : `<div class="reel-marker" style="left:${(opts.markerT * 100).toFixed(1)}%"></div>`}
         </div>
         <p class="reel-hint">${reducedMotion

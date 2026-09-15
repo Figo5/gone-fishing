@@ -168,3 +168,72 @@ for (const loc of LOCATIONS) {
     );
   }
 }
+
+/* ------------------------------------------------------------------ *
+ * Prestige cycles (v3): how long is each run under different policies? *
+ * ------------------------------------------------------------------ */
+import { performPrestige, prestigeEligibility, earningsMultiplier as multOf, upgradeTraining } from '../src/engine.js';
+import { PRESTIGE as P } from '../src/data.js';
+import { prestigeThreshold as pThresholdFn } from '../src/engine.js';
+void P;
+
+function prestigeCycle(seed, { activeCastsPerHour, useContracts, checkInMin }) {
+  const s = createNewState(START, seed);
+  const step = checkInMin * 60_000;
+  const runs = [];
+  let casts = 0;
+  let t = step;
+  while (t <= 24 * HOUR && runs.length < 3) {
+    const now = START + t;
+    advanceState(s, now);
+
+    // Purchases: hire (needs dock first) > dock > stall > training > rod > bait > location.
+    for (let guard = 0; guard < 4; guard += 1) {
+      if (hireWorker(s, now).ok) continue;
+      if (expandDock(s, now).ok) continue;
+      if (upgradeStall(s, now).ok) continue;
+      if (upgradeTraining(s, now).ok) continue;
+      if (!s.ownedRods.includes('rod_carbon') && upgradeRod(s, now, 'rod_carbon').ok) continue;
+      if (!s.ownedBaits.includes('bait_minnows') && purchaseBait(s, now, 'bait_minnows').ok) continue;
+      if (!s.unlockedLocations.includes('loc_river') && purchaseLocation(s, now, 'loc_river').ok) continue;
+      break;
+    }
+
+    if (useContracts && !s.contract.accepted) {
+      if (!s.contract.available.length) generateContracts(s, now);
+      const offers = [...s.contract.available].sort((a, b) => a.qty - b.qty);
+      if (offers.length) acceptContract(s, now, offers[0].id);
+    }
+
+    if (activeCastsPerHour > 0 && t % Math.max(step, Math.floor(HOUR / activeCastsPerHour)) < step) {
+      if (startPlayerCast(s, now).ok) {
+        for (let stage = 0; stage < 3; stage += 1) submitPlayerInput(s, now + 600 + stage * 700, 0.8);
+        settlePlayerCast(s, now + 2800, false);
+        casts += 1;
+      }
+    }
+
+    const el = prestigeEligibility(s);
+    if (el.eligible) {
+      const r = performPrestige(s, now);
+      if (r.ok) runs.push({ minutes: Math.round(t / 60_000), mult: multOf(s), dest: r.destination.locationId });
+    }
+    t += step;
+  }
+  return { runs, casts };
+}
+
+console.log('\n=== Prestige cycles (24h horizon, three runs per policy) ===');
+const POLICIES = [
+  { label: 'idle-only, 5-min check-ins, no contracts, no hand casts', activeCastsPerHour: 0, useContracts: false, checkInMin: 5 },
+  { label: 'idle + contracts, 5-min check-ins', activeCastsPerHour: 0, useContracts: true, checkInMin: 5 },
+  { label: 'active 12 casts/h + contracts, 5-min check-ins', activeCastsPerHour: 12, useContracts: true, checkInMin: 5 },
+];
+for (const policy of POLICIES) {
+  for (const seed of [1, 42, 90210]) {
+    const { runs, casts } = prestigeCycle(seed, policy);
+    const text = runs.map((r) => `run${runs.indexOf(r) + 1}@${r.minutes}min(${r.mult.toFixed(2)}x,${r.dest.replace('loc_', '')})`).join(' ');
+    console.log(`${policy.label} | seed ${seed} | ${text || 'no prestige in 24h'}${casts ? ` | ${casts} hand casts` : ''}`);
+  }
+}
+console.log(`Threshold: ${pThresholdFn(createNewState(START, 1)).toLocaleString()} base, +${P.thresholdGrowth.toLocaleString()} per prestige; needs ${P.minWorkers} workers.`);

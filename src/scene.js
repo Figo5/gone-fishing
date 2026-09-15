@@ -26,6 +26,27 @@ const PALETTES = {
     dock: '#3d3222', dockDark: '#2a2217', post: '#221a11',
     moon: true, reeds: '#24506b',
   },
+  cedar: {
+    skyTop: '#3d4a33', skyBottom: '#22301f', sun: '#f0d8a0', sunGlow: '#f0d8a0',
+    hills: '#2c3d26', trees: '#22331d', treeDark: '#182614',
+    waterTop: '#3f6b4e', waterBottom: '#1e3d2a', ripple: '#c2e4c8',
+    dock: '#57422a', dockDark: '#3b2c1b', post: '#2c2013',
+    moon: false, reeds: '#3f6b3a',
+  },
+  frost: {
+    skyTop: '#41586b', skyBottom: '#273a4a', sun: '#eaf4fb', sunGlow: '#d7ecf7',
+    hills: '#31475a', trees: '#263c4d', treeDark: '#1a2c3a',
+    waterTop: '#5688a8', waterBottom: '#274a63', ripple: '#e2f1fa',
+    dock: '#4a4f58', dockDark: '#33373e', post: '#25282e',
+    moon: false, reeds: '#4a7a8c',
+  },
+  mere: {
+    skyTop: '#1b1233', skyBottom: '#0d0a20', sun: '#c9b8ff', sunGlow: '#b7a3f2',
+    hills: '#201638', trees: '#181030', treeDark: '#100a20',
+    waterTop: '#2f2462', waterBottom: '#150e33', ripple: '#c3b2f7',
+    dock: '#3a2f4a', dockDark: '#281f33', post: '#1c1526',
+    moon: true, reeds: '#4a3a7a',
+  },
 };
 
 const BOAT_COLORS = ['#b3543f', '#3f7ab3', '#7a67b3', '#3fb371', '#c2903f'];

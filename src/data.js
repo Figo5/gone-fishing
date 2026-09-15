@@ -56,7 +56,46 @@ export const LOCATIONS = [
     blurb: 'Deep night water where the rare ones live.',
     scene: 'lake',
   },
+  {
+    id: 'loc_cedar',
+    name: 'Cedar Hollow',
+    cost: 0,
+    prestige: 1,
+    blurb: 'A warm woodland pond that hums with dragonflies. The prestige route.',
+    scene: 'cedar',
+  },
+  {
+    id: 'loc_frost',
+    name: 'Frostwater Basin',
+    cost: 0,
+    prestige: 2,
+    blurb: 'A cold alpine fishery where the water glitters like broken glass.',
+    scene: 'frost',
+  },
+  {
+    id: 'loc_mere',
+    name: 'Starlight Mere',
+    cost: 0,
+    prestige: 3,
+    blurb: 'A luminous night pond. The fish here glow faintly, like held breath.',
+    scene: 'mere',
+  },
 ];
+
+/** Prestige earnings milestone (run earnings, coins). Scales with prestige count. */
+export const PRESTIGE = {
+  /** runEarnings needed to prestige: base + growth * prestigeCount. */
+  baseThreshold: 250000,
+  thresholdGrowth: 350000,
+  /** Minimum owned workers to be eligible. */
+  minWorkers: 4,
+  /** Permanent multiplier: 1 + coefficient * prestigeCount. */
+  multCoefficient: 0.25,
+  maxWorkers: 6,
+};
+
+/** The three prestige ponds unlock at these prestige counts (and their cost is 0). */
+export const PRESTIGE_POND_UNLOCK = { loc_cedar: 1, loc_frost: 2, loc_mere: 3 };
 
 /**
  * Five species per location, in listing order:
@@ -145,22 +184,109 @@ export const SPECIES = [
     minWeight: 8, maxWeight: 90, baseValue: 6500,
     hint: 'Fictional. Surfaces only in still, moonlit water.',
   },
+
+  // Cedar Hollow (prestige 1) — warm woodland pond
+  {
+    id: 'sp_pumpkinseed', name: 'Pumpkinseed', rarity: 'common', locationId: 'loc_cedar',
+    minWeight: 0.1, maxWeight: 1.1, baseValue: 90,
+    hint: 'Bright as a dropped coin among the cedar roots.',
+  },
+  {
+    id: 'sp_redbreast', name: 'Redbreast Sunfish', rarity: 'uncommon', locationId: 'loc_cedar',
+    minWeight: 0.3, maxWeight: 2.2, baseValue: 200,
+    hint: 'Guards its shallows jealously. Strike while the dragonflies hover.',
+  },
+  {
+    id: 'sp_warmpouth', name: 'Warmouth', rarity: 'rare', locationId: 'loc_cedar',
+    minWeight: 0.5, maxWeight: 4, baseValue: 560,
+    hint: 'Lurks under sunken limbs. All mouth, all patience.',
+  },
+  {
+    id: 'sp_bowfin', name: 'Bowfin', rarity: 'epic', locationId: 'loc_cedar',
+    minWeight: 4, maxWeight: 21, baseValue: 1600,
+    hint: 'A living fossil that prefers the warm, weedy margins.',
+  },
+  {
+    id: 'sp_emberpike', name: 'Ember Pike', rarity: 'legendary', locationId: 'loc_cedar',
+    minWeight: 9, maxWeight: 60, baseValue: 9500,
+    hint: 'Fictional. Its scales hold the last light of the sunset.',
+  },
+
+  // Frostwater Basin (prestige 2) — cold alpine fishery
+  {
+    id: 'sp_arcticchar', name: 'Arctic Char', rarity: 'common', locationId: 'loc_frost',
+    minWeight: 0.6, maxWeight: 4.5, baseValue: 320,
+    hint: 'Comfortable in water that would ache your hands.',
+  },
+  {
+    id: 'sp_grayling', name: 'Grayling', rarity: 'uncommon', locationId: 'loc_frost',
+    minWeight: 0.8, maxWeight: 5, baseValue: 700,
+    hint: 'Its sail fin cuts the surface like a knife tip.',
+  },
+  {
+    id: 'sp_bulltrout', name: 'Bull Trout', rarity: 'rare', locationId: 'loc_frost',
+    minWeight: 2, maxWeight: 14, baseValue: 1900,
+    hint: 'A loner of the deep drop-offs. Rarely the first to bite.',
+  },
+  {
+    id: 'sp_glacierchar', name: 'Glacier Char', rarity: 'epic', locationId: 'loc_frost',
+    minWeight: 6, maxWeight: 30, baseValue: 5200,
+    hint: 'Fictional. Cold-blooded enough to ignore the ice.',
+  },
+  {
+    id: 'sp_auroratrout', name: 'Aurora Trout', rarity: 'legendary', locationId: 'loc_frost',
+    minWeight: 12, maxWeight: 70, baseValue: 14000,
+    hint: 'Fictional. Said to carry the northern lights in its flanks.',
+  },
+
+  // Starlight Mere (prestige 3) — luminous night pond
+  {
+    id: 'sp_glimmerdace', name: 'Glimmerdace', rarity: 'common', locationId: 'loc_mere',
+    minWeight: 0.2, maxWeight: 1.4, baseValue: 900,
+    hint: 'Fictional. Darts in silver flickers beneath the mere.',
+  },
+  {
+    id: 'sp_lanternperch', name: 'Lantern Perch', rarity: 'uncommon', locationId: 'loc_mere',
+    minWeight: 0.7, maxWeight: 4, baseValue: 2100,
+    hint: 'Fictional. Its fin-lamp dims when it senses a hook.',
+  },
+  {
+    id: 'sp_starwhisker', name: 'Starwhisker Catfish', rarity: 'rare', locationId: 'loc_mere',
+    minWeight: 3, maxWeight: 20, baseValue: 5600,
+    hint: 'Fictional. Feeds on fallen starlight along the bottom.',
+  },
+  {
+    id: 'sp_cometkoi', name: 'Comet Koi', rarity: 'epic', locationId: 'loc_mere',
+    minWeight: 6, maxWeight: 34, baseValue: 15000,
+    hint: 'Fictional. Leaves a fading tail of light when it turns.',
+  },
+  {
+    id: 'sp_mereavatar', name: 'Mere Avatar', rarity: 'legendary', locationId: 'loc_mere',
+    minWeight: 15, maxWeight: 110, baseValue: 42000,
+    hint: 'Fictional. The mere itself, briefly wearing a fish.',
+  },
 ];
 
 export const RODS = [
   { id: 'rod_bamboo', name: 'Bamboo Pole', cost: 0, castSeconds: 20, blurb: 'The starter pole. Slow, but it always casts.' },
   { id: 'rod_fiberglass', name: 'Fiberglass Rod', cost: 900, castSeconds: 16, blurb: 'Lighter tip, quicker casts.' },
   { id: 'rod_carbon', name: 'Carbon Spinning Rod', cost: 1800, castSeconds: 12, blurb: 'Fast, sensitive, good for river current.' },
-  { id: 'rod_pro', name: 'Pro Tournament Rod', cost: 12000, castSeconds: 9, blurb: 'The fastest rod in the game.' },
+  { id: 'rod_ashgrove', name: 'Ashgrove Rod', cost: 6500, castSeconds: 10, blurb: 'Cedar-cured and balanced for long woodland sessions.', prestige: 1 },
+  { id: 'rod_pro', name: 'Pro Tournament Rod', cost: 12000, castSeconds: 9, blurb: 'The tournament standard. Fast and unforgiving.' },
+  { id: 'rod_frostwind', name: 'Frostwind Rod', cost: 30000, castSeconds: 8, blurb: 'Built for alpine gusts; hardly flexes at all.', prestige: 2 },
+  { id: 'rod_tideglass', name: 'Tideglass Rod', cost: 75000, castSeconds: 7, blurb: 'A crystalline blank that hums on the drop.', prestige: 2 },
+  { id: 'rod_merelight', name: 'Merelight Rod', cost: 190000, castSeconds: 6, blurb: 'Rods woven from mere-light. The fastest casts in the game.', prestige: 3 },
 ];
+
+/** Floor on cast duration so speed upgrades cannot make timing meaningless. */
+export const MIN_CAST_MS = 5000;
 
 /**
  * Bait tradeoffs are real: only Worms keeps full cast speed.
  *  castMult  — multiplier on cast duration (>1 is slower)
  *  sizeBias  — exponent < 1 on the uniform size roll; pushes weights toward the top of the range
  *  rarity    — multipliers applied to BASE_RARITY_WEIGHTS, then renormalized
- *  sizeBias > 1 favours trophies and personal bests. Glow Lure skews small (big fish
- *  ignore the rig) so its rarity advantage is paid for, not free.
+ *  prestige  — unlock tier; omitted or 0 means available from prestige zero
  */
 export const BAITS = [
   {
@@ -176,6 +302,33 @@ export const BAITS = [
     rarity: { common: 0.55, uncommon: 1, rare: 1.8, epic: 2.2, legendary: 2.5 },
     blurb: 'Draws rarer species far more often, but the rig is slow to cast and the big ones ignore it.',
   },
+  {
+    id: 'bait_berries', name: 'Cedar Berries', cost: 14000, castMult: 1.1, sizeBias: 1.25,
+    prestige: 1,
+    blurb: 'Woodland bait: bigger fish than Worms with almost no speed lost, but rarity odds stay flat.',
+  },
+  {
+    id: 'bait_moonmote', name: 'Moonmote', cost: 120000, castMult: 1.3, sizeBias: 0.9,
+    rarity: { common: 0.45, uncommon: 1.2, rare: 1.9, epic: 2.6, legendary: 3.2 },
+    prestige: 3,
+    blurb: 'A mote of mere-light. Even better rarity odds than the Glow Lure and gentler on speed — the pride of the tackle box.',
+  },
+];
+
+/** Crew training: modest, permanent-for-the-run improvements to automatic cast speed. */
+export const TRAINING_LEVELS = [
+  { mult: 1, cost: 0, name: 'Green Crew' },
+  { mult: 0.92, cost: 4500, name: 'Drilled Crew' },
+  { mult: 0.85, cost: 18000, name: 'Veteran Crew' },
+  { mult: 0.78, cost: 60000, name: 'Elite Crew' },
+];
+
+/** Reel control: widens the manual timing target (permanent for the run). */
+export const REEL_CONTROL_LEVELS = [
+  { halfWidth: 0.14, cost: 0, name: 'Bare Hands' },
+  { halfWidth: 0.18, cost: 3000, name: 'Padded Grip' },
+  { halfWidth: 0.22, cost: 12000, name: 'Machined Reel' },
+  { halfWidth: 0.26, cost: 45000, name: 'Mere-Tuned Reel' },
 ];
 
 export const DEFAULT_SETUP = { locationId: 'loc_pond', rodId: 'rod_bamboo', baitId: 'bait_worms' };
@@ -202,6 +355,7 @@ export const STALL_LEVELS = [
   { mult: 1.1, cost: 1200, name: 'Proper Fish Stall' },
   { mult: 1.2, cost: 5000, name: 'Iced Display Stall' },
   { mult: 1.3, cost: 15000, name: 'Dockside Market' },
+  { mult: 1.45, cost: 80000, name: 'Lakeside Emporium' },
 ];
 
 /** Player fishing: marker sweep per reel stage and the quality bonus curves. */

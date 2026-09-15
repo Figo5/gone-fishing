@@ -19,11 +19,16 @@ import {
   CONTRACT_TEMPLATES,
   DOCK_LEVELS,
   HIRE_COSTS,
+  LOCATIONS,
   OFFLINE_CAP_MS,
+  MIN_CAST_MS,
   PLAYER_CAST,
+  PRESTIGE,
   RECENT_LIMIT,
   RARITY_ORDER,
+  REEL_CONTROL_LEVELS,
   STALL_LEVELS,
+  TRAINING_LEVELS,
   castDurationMs,
   coinsForCatch,
   getBait,
@@ -54,7 +59,7 @@ export function createWorker(id) {
 /** v2 state. (v1's single `fishing` flag is superseded; migration handles old saves.) */
 export function createNewState(now, seed) {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     coins: 0,
     ownedRods: ['rod_bamboo'],
     ownedBaits: ['bait_worms'],
@@ -62,6 +67,8 @@ export function createNewState(now, seed) {
     ownedWorkers: 1,
     dockLevel: 0,
     stallLevel: 0,
+    trainingLevel: 0,
+    reelControlLevel: 0,
     rodId: 'rod_bamboo',
     workers: [createWorker(1)],
     player: {
@@ -80,6 +87,12 @@ export function createNewState(now, seed) {
       accepted: null,
       completed: 0,
       earnedCoins: 0,
+    },
+    prestige: {
+      count: 0,
+      runEarnings: 0, // this run's gross earnings; spending never reduces it
+      lastPrestigeAt: 0, // timestamp of the last prestige (0 = never)
+      homePondId: 'loc_pond',
     },
     paused: false,
     castCount: 0,
@@ -110,9 +123,20 @@ export function discoveredCountFor(state, locationId) {
   }).length;
 }
 
-/** The operation's shared rod — this is the whole cast-time curve for everyone. */
+/** The operation's shared rod + crew training — cast-time curve for everyone. */
 export function currentCastDurationMs(state) {
-  return castDurationMs(getRod(state.rodId), getBait('bait_worms'));
+  const base = castDurationMs(getRod(state.rodId), getBait('bait_worms'));
+  const training = TRAINING_LEVELS[state.trainingLevel];
+  const trained = training ? Math.round(base * training.mult) : base;
+  return Math.max(MIN_CAST_MS, trained);
+}
+
+/** Worker cast time includes their bait's speed penalty plus crew training. */
+export function workerCastDurationMs(state, worker) {
+  const base = castDurationMs(getRod(state.rodId), getBait(worker.baitId));
+  const training = TRAINING_LEVELS[state.trainingLevel];
+  const trained = training ? Math.round(base * training.mult) : base;
+  return Math.max(MIN_CAST_MS, trained);
 }
 
 export function dockCapacity(state) {
@@ -135,9 +159,37 @@ export function stallName(state) {
   return level ? level.name : 'Crate on a Barrel';
 }
 
-/** Sale value of a fish after the stall's cut, always a positive integer. */
+/** Permanent prestige multiplier: 1.00x, 1.25x, 1.50x, ... (additive, data-driven). */
+export function earningsMultiplier(state) {
+  const count = state.prestige ? state.prestige.count : 0;
+  return 1 + PRESTIGE.multCoefficient * count;
+}
+
+/** Manual timing target half-width, widened by reel-control upgrades. */
+export function reelHalfWidth(state) {
+  const level = REEL_CONTROL_LEVELS[state.reelControlLevel];
+  return level ? level.halfWidth : PLAYER_CAST.halfWidth;
+}
+
+export function trainingName(state) {
+  const level = TRAINING_LEVELS[state.trainingLevel];
+  return level ? level.name : 'Green Crew';
+}
+
+export function reelControlName(state) {
+  const level = REEL_CONTROL_LEVELS[state.reelControlLevel];
+  return level ? level.name : 'Bare Hands';
+}
+
+/** Sale value of a fish: stall cut, then the permanent prestige multiplier, once. */
 export function stallValue(state, coins) {
-  return Math.max(1, Math.round(coins * stallMultiplier(state)));
+  return Math.max(1, Math.round(coins * stallMultiplier(state) * earningsMultiplier(state)));
+}
+
+/** Track gross run earnings for prestige eligibility; spending never reduces it. */
+function addRunEarnings(state, coins) {
+  if (!state.prestige) state.prestige = { count: 0, runEarnings: 0, lastPrestigeAt: 0, homePondId: 'loc_pond' };
+  state.prestige.runEarnings += coins;
 }
 
 /* ------------------------------------------------------------------ *
@@ -212,7 +264,7 @@ function rollSpeciesFrom(locationId, baitId, uniform) {
 }
 
 function workerDuration(state, worker) {
-  return castDurationMs(getRod(state.rodId), getBait(worker.baitId));
+  return workerCastDurationMs(state, worker);
 }
 
 /** Resolve one worker cast: exactly two draws from the worker's own stream, fixed order. */
@@ -228,6 +280,7 @@ function resolveWorkerCatch(state, worker, stampAt) {
   const coins = stallValue(state, coinsForCatch(species, rounded));
 
   worker.catches += 1;
+  addRunEarnings(state, coins);
   return recordCatch(state, species, rounded, coins, 'worker', stampAt);
 }
 
@@ -376,6 +429,7 @@ export function purchaseBait(state, now, baitId) {
   if (!check.ok) return { ...check, cost: bait.cost };
   const settle = advanceState(state, now);
   state.ownedBaits.push(baitId);
+  state.coins -= bait.cost;
   return { ok: true, cost: bait.cost, settle };
 }
 
@@ -389,6 +443,46 @@ export function purchaseLocation(state, now, locationId) {
   const settle = advanceState(state, now);
   state.unlockedLocations.push(locationId);
   return { ok: true, cost: location.cost, settle };
+}
+
+/** Upgrade crew training (faster automatic casts for the rest of the run). */
+export function nextTrainingLevel(state) {
+  return TRAINING_LEVELS[state.trainingLevel + 1] || null;
+}
+
+export function upgradeTraining(state, now) {
+  const next = nextTrainingLevel(state);
+  if (!next) return { ok: false, reason: 'maxed' };
+  const check = funds(state, next.cost);
+  if (!check.ok) return { ...check, cost: next.cost };
+  const settle = advanceState(state, now);
+  state.trainingLevel += 1;
+  state.coins -= next.cost;
+  return { ok: true, cost: next.cost, level: next, settle };
+}
+
+/** Upgrade reel control (wider manual timing target for the rest of the run). */
+export function nextReelControlLevel(state) {
+  return REEL_CONTROL_LEVELS[state.reelControlLevel + 1] || null;
+}
+
+export function upgradeReelControl(state, now) {
+  const next = nextReelControlLevel(state);
+  if (!next) return { ok: false, reason: 'maxed' };
+  const check = funds(state, next.cost);
+  if (!check.ok) return { ...check, cost: next.cost };
+  const settle = advanceState(state, now);
+  state.reelControlLevel += 1;
+  state.coins -= next.cost;
+  return { ok: true, cost: next.cost, level: next, settle };
+}
+
+/** Purchase a bait unlock; availability gated by prestige tier (access is permanent). */
+export function baitAvailable(state, baitId) {
+  const bait = getBait(baitId);
+  if (!bait) return false;
+  const needed = bait.prestige || 0;
+  return (state.prestige ? state.prestige.count : 0) >= needed;
 }
 
 /* ------------------------------------------------------------------ *
@@ -476,8 +570,9 @@ export function startPlayerCast(state, now) {
 }
 
 /** The visible target zone for a reel stage (fractions of the marker track). */
-export function stageTargetWindow() {
-  return { center: PLAYER_CAST.center, halfWidth: PLAYER_CAST.halfWidth };
+export function stageTargetWindow(state) {
+  const level = state && REEL_CONTROL_LEVELS[state.reelControlLevel];
+  return { center: PLAYER_CAST.center, halfWidth: level ? level.halfWidth : PLAYER_CAST.halfWidth };
 }
 
 /**
@@ -514,8 +609,8 @@ export function settlePlayerCast(state, now, auto = false) {
   const bait = getBait(state.player.baitId);
   const base = rollWeight(species, game.sizeRoll, bait ? bait.sizeBias : 1);
   const weight = Math.max(species.minWeight, Math.round(base * PLAYER_CAST.sizeBonus(q) * 100) / 100);
-  // Cap the player catch at a few worker-average catches so hands-on play stays a
-  // strong boost without making hired workers irrelevant.
+  // Cap the player catch at a few worker-average catches *at the water being fished*,
+  // so hands-on play stays meaningful on every pond without overshadowing the crew.
   const workerAverage = expectedWorkerPerCast(state, state.player.locationId, 'bait_worms');
   const cap = Math.max(1, Math.round(workerAverage * PLAYER_CAST.valueCapWorkerCasts));
   const coins = Math.min(cap, stallValue(state, Math.round(coinsForCatch(species, weight) * PLAYER_CAST.valueBonus(q))));
@@ -525,6 +620,7 @@ export function settlePlayerCast(state, now, auto = false) {
   state.player.catches += 1;
   state.player.coins += coins;
   state.player.bestWeight = Math.max(state.player.bestWeight, weight);
+  addRunEarnings(state, coins);
 
   const result = recordCatch(state, species, weight, coins, 'player', Math.floor(now));
   return { ok: true, quality: q, ...result };
@@ -674,12 +770,147 @@ function applyContractProgress(state, result) {
   if (!hit) return;
   c.count += 1;
   if (c.count >= c.qty) {
+    const bonus = stallValue(state, c.reward); // prestige/stall applied once, here
     state.contract.accepted = null;
     state.contract.completed += 1;
-    state.contract.earnedCoins += c.reward;
-    state.coins += c.reward;
-    result.contractComplete = { reward: c.reward, templateId: c.templateId };
+    state.contract.earnedCoins += bonus;
+    state.coins += bonus;
+    addRunEarnings(state, bonus);
+    result.contractComplete = { reward: bonus, templateId: c.templateId };
   }
+}
+
+/* ------------------------------------------------------------------ *
+ * Prestige: move the business to a new pond                           *
+ * ------------------------------------------------------------------ */
+
+/** Run earnings needed at the current prestige count. */
+export function prestigeThreshold(state) {
+  const count = state.prestige ? state.prestige.count : 0;
+  return PRESTIGE.baseThreshold + PRESTIGE.thresholdGrowth * count;
+}
+
+/** Ponds that unlock at a given prestige count (beyond the always-available ones). */
+export function pondsUnlockingAt(count) {
+  return LOCATIONS.filter((l) => l.prestige === count);
+}
+
+/** The pond(s) the player may settle after the next prestige. */
+export function prestigeDestination(state) {
+  const nextCount = (state.prestige ? state.prestige.count : 0) + 1;
+  const unlocking = pondsUnlockingAt(nextCount);
+  if (unlocking.length) {
+    return { kind: 'new_pond', locationId: unlocking[0].id, location: unlocking[0] };
+  }
+  // All ponds unlocked: settle on any already-unlocked water. The reward is the
+  // next multiplier, not a nonexistent pond.
+  const home = state.prestige?.homePondId || 'loc_pond';
+  return { kind: 'same_pond', locationId: home, location: getLocation(home) };
+}
+
+/** Eligibility against the current authoritative state (never cached). */
+export function prestigeEligibility(state) {
+  const threshold = prestigeThreshold(state);
+  const earnings = state.prestige ? state.prestige.runEarnings : 0;
+  const workers = state.ownedWorkers;
+  return {
+    eligible: earnings >= threshold && workers >= PRESTIGE.minWorkers,
+    earnings,
+    threshold,
+    earningsMet: earnings >= threshold,
+    workers,
+    workersNeeded: PRESTIGE.minWorkers,
+    workersMet: workers >= PRESTIGE.minWorkers,
+    multiplier: earningsMultiplier(state),
+    nextMultiplier: 1 + PRESTIGE.multCoefficient * ((state.prestige ? state.prestige.count : 0) + 1),
+    destination: prestigeDestination(state),
+  };
+}
+
+/**
+ * Perform the prestige transition as one atomic step. Rechecks eligibility,
+ * settles old-run time under OLD bonuses (settle happens in the caller before
+ * this runs), increments the counter, unlocks the new pond, and restarts the
+ * operating business at the destination.
+ * @returns {{ ok: boolean, reason?: string, state: object, unlocked?: object }}
+ */
+export function performPrestige(state, now) {
+  const eligibility = prestigeEligibility(state);
+  if (!eligibility.eligible) return { ok: false, reason: 'not_eligible', eligibility };
+
+  const previous = state.prestige;
+  const newCount = previous.count + 1;
+  const destination = eligibility.destination;
+
+  // --- preserved across prestige
+  const preserved = {
+    collection: state.collection,
+    recent: state.recent,
+    recentCounter: state.recentCounter,
+    lifetimeCatches: state.lifetimeCatches,
+    lifetimeCoins: state.lifetimeCoins,
+    playTimeMs: state.playTimeMs,
+    castCount: state.castCount,
+    unlockedLocations: state.unlockedLocations.slice(),
+    ownedRods: ['rod_bamboo'], // tiers stay accessible; equipment is bought again
+    ownedBaits: ['bait_worms'],
+    paused: state.paused, // preserve whether the player had globally paused
+    player: {
+      ...state.player,
+      active: null, // any unfinished hand cast is voided without penalty
+    },
+  };
+
+  // --- the reset business
+  const fresh = createNewState(now, previous.count * 7919 + 13);
+  fresh.schemaVersion = state.schemaVersion;
+  fresh.coins = 0;
+  fresh.ownedWorkers = 1;
+  fresh.workers = [createWorker(1)];
+  fresh.dockLevel = 0;
+  fresh.stallLevel = 0;
+  fresh.trainingLevel = 0;
+  fresh.reelControlLevel = 0;
+  fresh.rodId = 'rod_bamboo';
+  fresh.paused = preserved.paused;
+  fresh.collection = preserved.collection;
+  fresh.recent = preserved.recent;
+  fresh.recentCounter = preserved.recentCounter;
+  fresh.lifetimeCatches = preserved.lifetimeCatches;
+  fresh.lifetimeCoins = preserved.lifetimeCoins;
+  fresh.playTimeMs = preserved.playTimeMs;
+  fresh.castCount = preserved.castCount;
+  fresh.unlockedLocations = preserved.unlockedLocations;
+  fresh.player = { ...preserved.player, locationId: destination.locationId, rngState: state.player.rngState };
+  // The free worker starts at the new home pond with the viable free setup.
+  fresh.workers[0].locationId = destination.locationId;
+  fresh.workers[0].baitId = 'bait_worms';
+  fresh.workers[0].progressMs = 0;
+  fresh.processedAt = Math.floor(now);
+  fresh.lastSeenAt = Math.floor(now);
+
+  // --- prestige bookkeeping
+  fresh.prestige = {
+    count: newCount,
+    runEarnings: 0, // the new run starts from zero; old-run data must not qualify it
+    lastPrestigeAt: Math.floor(now),
+    homePondId: destination.locationId,
+  };
+
+  // --- unlock the destination pond (plus any others at this count)
+  const unlockedNow = [];
+  for (const location of pondsUnlockingAt(newCount)) {
+    if (!fresh.unlockedLocations.includes(location.id)) {
+      fresh.unlockedLocations.push(location.id);
+      unlockedNow.push(location);
+    }
+  }
+
+  // Replace the caller's state in place (single object identity, atomic swap of fields).
+  for (const key of Object.keys(state)) delete state[key];
+  Object.assign(state, fresh);
+
+  return { ok: true, count: newCount, destination, unlockedNow, state };
 }
 
 /* ------------------------------------------------------------------ *
