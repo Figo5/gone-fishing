@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Gone Fishing</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="22" height="22" focusable="false"><path d="M2 12c3.5-4 7-6 10-6 3 0 6.5 2 10 6-3.5 4-7 6-10 6-3 0-6.5-2-10-6Z" fill="currentColor" opacity=".28"/><circle cx="9" cy="11" r="1.6" fill="currentColor"/><path d="M12 12c2-2.4 4-3.6 6-4-.6 1.4-.6 2.6 0 4-.6 1.4-.6 2.6 0 4-2-.4-4-1.6-6-4Z" fill="currentColor"/></svg>
+        </span>
+        <h1>Gone Fishing</h1>
+      </div>
+
+      <div class="headline-stats">
+        <div class="stat stat-coins" title="Coins">
+          <span class="coin-dot" aria-hidden="true"></span>
+          <span class="stat-label">Coins</span>
+          <strong id="stat-coins">0</strong>
+        </div>
+        <div class="stat" title="Species discovered">
+          <span class="stat-label">Collection</span>
+          <strong id="stat-collection">0/15</strong>
+        </div>
+        <div class="stat stat-trophies" title="Trophy fish landed">
+          <span class="stat-label">Trophies</span>
+          <strong id="stat-trophies">0</strong>
+        </div>
+      </div>
+
+      <button type="button" class="btn btn-ghost" id="settings-open" aria-haspopup="dialog">Settings</button>
+    </header>
+
+    <div id="banners" class="banners" role="status" aria-live="polite"></div>
+
+    <nav class="tabs" aria-label="Sections">
+      <button type="button" class="tab" id="tab-fishing" data-panel="fishing" aria-controls="panel-fishing" aria-selected="true">Fishing</button>
+      <button type="button" class="tab" id="tab-collection" data-panel="collection" aria-controls="panel-collection" aria-selected="false">Collection</button>
+      <button type="button" class="tab" id="tab-tackle" data-panel="tackle" aria-controls="panel-tackle" aria-selected="false">Tackle &amp; Upgrades</button>
+    </nav>
+
+    <main>
+      <section class="panel" id="panel-fishing" aria-labelledby="tab-fishing">
+        <div class="fishing-grid">
+          <div class="scene-wrap">
+            <div class="scene" id="scene" role="img" aria-label="Fishing scene"></div>
+            <p class="scene-caption" id="scene-caption"></p>
+          </div>
+
+          <div class="control-card">
+            <div class="control-head">
+              <h2 id="control-location">Stillwater Pond</h2>
+              <p class="muted" id="control-setup"></p>
+            </div>
+
+            <div class="cast">
+              <div class="cast-bar" role="progressbar" aria-labelledby="cast-label" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="cast-bar">
+                <div class="cast-fill" id="cast-fill"></div>
+              </div>
+              <p class="cast-line" id="cast-label">Ready to cast.</p>
+            </div>
+
+            <div class="control-actions">
+              <button type="button" class="btn btn-primary" id="toggle-fishing">Start Fishing</button>
+              <button type="button" class="btn btn-ghost" id="goto-tackle">Upgrades</button>
+            </div>
+
+            <dl class="mini-stats">
+              <div><dt>Casts</dt><dd id="mini-casts">0</dd></div>
+              <div><dt>Fish landed</dt><dd id="mini-catches">0</dd></div>
+              <div><dt>Coins earned</dt><dd id="mini-earned">0</dd></div>
+              <div><dt>Time fishing</dt><dd id="mini-time">0m</dd></div>
+            </dl>
+          </div>
+        </div>
+
+        <div class="recent-block">
+          <div class="block-head">
+            <h3>Recent catches</h3>
+            <span class="muted" id="recent-note">Catches are sold automatically.</span>
+          </div>
+          <ol class="recent" id="recent-list"></ol>
+        </div>
+      </section>
+
+      <section class="panel" id="panel-collection" aria-labelledby="tab-collection" hidden>
+        <div class="block-head">
+          <h3>Collection</h3>
+          <span class="muted" id="collection-summary"></span>
+        </div>
+        <div id="collection-body"></div>
+      </section>
+
+      <section class="panel" id="panel-tackle" aria-labelledby="tab-tackle" hidden>
+        <div class="block-head">
+          <h3>Tackle &amp; Upgrades</h3>
+          <span class="muted">Everything here is a one-time purchase.</span>
+        </div>
+        <div id="tackle-body"></div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <p class="muted">
+        Idle fishing: time away keeps building for up to 8 hours, then fishing resumes where it left off.
+      </p>
+    </footer>
+  </div>
+
+  <!-- While you were away -->
+  <div class="modal-shell" id="away-shell" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="away-title">
+      <h2 id="away-title">While you were away</h2>
+      <div id="away-body"></div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-primary" id="away-close">Back to the water</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings -->
+  <div class="modal-shell" id="settings-shell" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+      <h2 id="settings-title">Settings</h2>
+
+      <section class="settings-block">
+        <h3>Save status</h3>
+        <p id="storage-status" class="muted"></p>
+      </section>
+
+      <section class="settings-block">
+        <h3>Backup</h3>
+        <div class="row">
+          <button type="button" class="btn" id="export-save">Export Save</button>
+          <label class="btn btn-file" for="import-file">Import Save…</label>
+          <input type="file" id="import-file" accept="application/json,.json" class="visually-hidden" />
+          <button type="button" class="btn btn-danger" id="reset-open">Reset Game</button>
+        </div>
+        <p class="muted" id="import-status"></p>
+      </section>
+
+      <div class="modal-actions">
+        <button type="button" class="btn" id="settings-close">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Generic confirm -->
+  <div class="modal-shell" id="confirm-shell" hidden>
+    <div class="modal modal-small" role="dialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-text">
+      <h2 id="confirm-title">Are you sure?</h2>
+      <p id="confirm-text"></p>
+      <div class="modal-actions">
+        <button type="button" class="btn" id="confirm-cancel">Cancel</button>
+        <button type="button" class="btn btn-danger" id="confirm-ok">Confirm</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>

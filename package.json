@@ -1,0 +1,12 @@
+{
+  "name": "gone-fishing",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Gone Fishing — a small cozy idle fishing game. Plain HTML/CSS/JS, no dependencies.",
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "start": "python3 -m http.server 8080",
+    "simulate": "node tools/simulate.mjs"
+  }
+}

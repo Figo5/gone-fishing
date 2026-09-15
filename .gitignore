@@ -1,0 +1,9 @@
+# OS noise
+.DS_Store
+
+# Browser-validation screenshots and other local evidence
+.browser-check/
+
+# Nothing here needs node_modules (the game has zero dependencies), but if a
+# tool is ever run locally, keep it out of the repo.
+node_modules/
