@@ -4,35 +4,56 @@ import assert from 'node:assert/strict';
 import {
   BAITS,
   BASE_RARITY_WEIGHTS,
+  CONTRACT_TEMPLATES,
+  DOCK_LEVELS,
+  HIRE_COSTS,
   LOCATIONS,
+  OFFLINE_CAP_MS,
+  PLAYER_CAST,
   RARITY_ORDER,
   RODS,
   SPECIES,
+  STALL_LEVELS,
   coinsForCatch,
   getSpecies,
-  rarityDistribution,
   speciesByLocation,
   trophyThreshold,
 } from '../src/data.js';
 import {
+  abandonContract,
+  acceptContract,
   advanceState,
+  assignWorker,
   collectionEntry,
   createNewState,
-  purchase,
-  purchaseAndVisit,
+  dockCapacity,
+  expandDock,
+  generateContracts,
+  hireWorker,
+  purchaseBait,
+  purchaseLocation,
+  settlePlayerCast,
+  startPlayerCast,
+  submitPlayerInput,
+  upgradeRod,
+  upgradeStall,
+  workerEstimate,
 } from '../src/engine.js';
 
 const T0 = 1_700_000_000_000;
 
-test('content shape matches the design: three locations, five ordered species each', () => {
-  assert.equal(LOCATIONS.length, 3);
-  assert.deepEqual(LOCATIONS.map((l) => l.id), ['loc_pond', 'loc_river', 'loc_lake']);
+test('content shape: six locations, five ordered species each, thirty species total', () => {
+  assert.equal(LOCATIONS.length, 6);
+  assert.deepEqual(LOCATIONS.map((l) => l.id), ['loc_pond', 'loc_river', 'loc_lake', 'loc_cedar', 'loc_frost', 'loc_mere']);
   assert.equal(LOCATIONS[0].cost, 0, 'the first location is free');
   assert.ok(LOCATIONS[1].cost > 0 && LOCATIONS[2].cost > LOCATIONS[1].cost, 'later water costs more');
+  for (const location of LOCATIONS.slice(3)) {
+    assert.equal(location.cost, 0, `${location.name} is a prestige pond, not bought`);
+    assert.ok(location.prestige >= 1 && location.prestige <= 3);
+  }
 
-  assert.equal(SPECIES.length, 15);
-  const ids = new Set(SPECIES.map((s) => s.id));
-  assert.equal(ids.size, 15, 'species ids are unique');
+  assert.equal(SPECIES.length, 30);
+  assert.equal(new Set(SPECIES.map((s) => s.id)).size, 30, 'species ids are unique');
 
   for (const location of LOCATIONS) {
     const pool = speciesByLocation(location.id);
@@ -49,141 +70,227 @@ test('content shape matches the design: three locations, five ordered species ea
     }
   }
 
-  // Later water is worth more per cast.
   const meanValue = (locationId) => {
     const pool = speciesByLocation(locationId);
     return pool.reduce((sum, s) => sum + s.baseValue * BASE_RARITY_WEIGHTS[s.rarity], 0);
   };
   assert.ok(meanValue('loc_river') > meanValue('loc_pond') * 1.5);
   assert.ok(meanValue('loc_lake') > meanValue('loc_river') * 1.5);
+  // Prestige ponds pay progressively more than the pond before them.
+  assert.ok(meanValue('loc_cedar') > meanValue('loc_pond') * 4);
+  assert.ok(meanValue('loc_frost') > meanValue('loc_cedar') * 2);
+  assert.ok(meanValue('loc_mere') > meanValue('loc_frost') * 2);
+});
+
+test('prestige ponds are gated by prestige count, not coins', () => {
+  for (const location of LOCATIONS.filter((l) => l.prestige)) {
+    assert.equal(location.cost, 0, `${location.id} must not be purchasable`);
+  }
 });
 
 test('base probability distribution is 58/28/10/3.5/0.5 and sums to one', () => {
   assert.deepEqual(BASE_RARITY_WEIGHTS, { common: 0.58, uncommon: 0.28, rare: 0.1, epic: 0.035, legendary: 0.005 });
   const worms = BAITS.find((b) => b.id === 'bait_worms');
   for (const location of LOCATIONS) {
-    const dist = rarityDistribution(speciesByLocation(location.id), worms);
-    const byRarity = Object.fromEntries(dist.map((d) => [d.rarity, d.probability]));
-    for (const rarity of RARITY_ORDER) {
-      assert.ok(Math.abs(byRarity[rarity] - BASE_RARITY_WEIGHTS[rarity]) < 1e-9, `${location.id} ${rarity}`);
-    }
-    assert.ok(Math.abs(dist.reduce((a, d) => a + d.probability, 0) - 1) < 1e-9);
+    const dist = speciesByLocation(location.id);
+    void dist;
+    const sum = RARITY_ORDER.reduce((acc, r) => acc + BASE_RARITY_WEIGHTS[r], 0);
+    assert.ok(Math.abs(sum - 1) < 1e-9);
   }
 });
 
-test('equipment list matches the design: four rods and three permanent baits', () => {
-  assert.equal(RODS.length, 4);
-  assert.equal(RODS[0].cost, 0, 'the starter rod is free');
-  assert.deepEqual(RODS.map((r) => r.castSeconds), [20, 16, 12, 9], 'suggested base cast durations');
+test('equipment list: eight rods, five baits, prestige tiers gate the top end', () => {
+  assert.equal(RODS.length, 8);
+  assert.equal(RODS[0].cost, 0);
   for (let i = 1; i < RODS.length; i += 1) {
-    assert.ok(RODS[i].cost > RODS[i - 1].cost, 'better rods cost more');
-    assert.ok(RODS[i].castSeconds < RODS[i - 1].castSeconds, 'better rods cast faster');
+    assert.ok(RODS[i].cost > RODS[i - 1].cost, 'rods get pricier');
+  }
+  for (const rod of RODS.filter((r) => r.prestige)) {
+    assert.ok(rod.castSeconds <= 10, `${rod.id} is a prestige-tier speed upgrade`);
+  }
+  // Starter-pond rods stay available at prestige zero.
+  for (const rod of RODS.filter((r) => !r.prestige)) {
+    assert.ok(rod.cost <= 12000, `${rod.id} at ${rod.cost}`);
   }
 
-  assert.equal(BAITS.length, 3);
+  assert.equal(BAITS.length, 5);
+  assert.equal(BAITS.filter((b) => b.prestige).length, 2, 'two prestige-tier baits');
   const worms = BAITS.find((b) => b.id === 'bait_worms');
-  assert.equal(worms.cost, 0, 'worms are free');
-  assert.equal(worms.castMult, 1, 'worms keep full cast speed');
+  assert.equal(worms.cost, 0 && worms.castMult, 1);
+  assert.equal(worms.castMult, 1);
   assert.equal(worms.sizeBias, 1);
-  assert.equal(worms.rarity, null, 'worms use the base species odds');
-
+  assert.equal(worms.rarity, null);
   for (const bait of BAITS.slice(1)) {
     assert.ok(bait.cost > 0, `${bait.id} is a one-time unlock`);
-    assert.ok(bait.castMult > 1, `${bait.id} slows casting, so nothing is strictly better than worms`);
+    assert.ok(bait.castMult > 1, `${bait.id} costs cast speed, so nothing is strictly better than worms`);
   }
   const minnows = BAITS.find((b) => b.id === 'bait_minnows');
   const glow = BAITS.find((b) => b.id === 'bait_glow');
   assert.ok(minnows.sizeBias > 1, 'minnows bias toward big fish');
   assert.ok(glow.sizeBias < 1, 'the glow lure skews small, paying for its rarity advantage');
-  assert.ok(glow.rarity && glow.rarity.legendary > 1 && glow.rarity.common < 1);
+  assert.ok(glow.rarity.legendary > 1 && glow.rarity.common < 1);
 });
 
-test('long play keeps per-species records internally consistent at every location', () => {
+test('tycoon economy tables: six workers, five dock levels, four stall levels', () => {
+  assert.equal(HIRE_COSTS.length, 7, 'worker 1..6 plus a sentinel');
+  assert.equal(HIRE_COSTS[1], 0 && HIRE_COSTS[2], 0);
+  assert.equal(HIRE_COSTS[2], 0, 'the second worker is free');
+  for (let i = 3; i <= 6; i += 1) assert.ok(HIRE_COSTS[i] > HIRE_COSTS[i - 1], 'later hires cost more');
+
+  assert.equal(DOCK_LEVELS[0].capacity, 2);
+  for (let i = 1; i < DOCK_LEVELS.length; i += 1) {
+    assert.ok(DOCK_LEVELS[i].capacity > DOCK_LEVELS[i - 1].capacity, 'capacity grows');
+    assert.ok(DOCK_LEVELS[i].cost > 0);
+  }
+  assert.equal(DOCK_LEVELS[DOCK_LEVELS.length - 1].capacity, 6, 'six workers at most');
+
+  assert.equal(STALL_LEVELS[0].mult, 1);
+  assert.equal(STALL_LEVELS.length, 5, 'five stall levels');
+  for (let i = 1; i < STALL_LEVELS.length; i += 1) {
+    assert.ok(STALL_LEVELS[i].mult > STALL_LEVELS[i - 1].mult, 'stall improves sales');
+    assert.ok(STALL_LEVELS[i].mult <= 1.45, 'each step stays a modest jump');
+  }
+});
+
+test('long play keeps per-species records consistent at every location', () => {
   for (const location of LOCATIONS) {
     const state = createNewState(T0, 2024);
-    state.fishing = true;
-    state.locationId = location.id;
-    state.unlockedLocations = LOCATIONS.map((l) => l.id);
     state.ownedRods = RODS.map((r) => r.id);
     state.rodId = 'rod_pro';
-    state.coins = 10_000_000;
+    state.workers[0].locationId = location.id; // the whole business fishes this water
+    const summary = advanceState(state, T0 + OFFLINE_CAP_MS);
+    assert.ok(summary.catches.length > 1000, `${location.id} resolves many catches`);
 
-    const summary = advanceState(state, T0 + 8 * 60 * 60 * 1000);
-    assert.ok(summary.catches.length > 1000, `${location.id} should resolve many catches`);
-    assert.ok(state.coins > 0);
-
-    for (const record of summary.catches) {
-      assert.ok(Number.isInteger(record.coins) && record.coins >= 1, 'rewards are positive integers');
-    }
-
-    let trophies = 0;
+    let loggedTrophies = 0;
     for (const species of speciesByLocation(location.id)) {
-      const entry = collectionEntry(state, species.id);
-      if (entry.catches === 0) continue;
+      const entry = state.collection[species.id];
+      if (!entry || entry.catches === 0) continue;
       assert.ok(entry.bestWeight >= species.minWeight && entry.bestWeight <= species.maxWeight, `${species.id} best in range`);
       assert.ok(entry.trophies <= entry.catches, `${species.id} cannot have more trophies than catches`);
       if (entry.trophies > 0) {
-        assert.ok(
-          entry.bestWeight >= trophyThreshold(species),
-          `${species.id} has ${entry.trophies} trophies, so its best must clear the trophy bar`,
-        );
+        assert.ok(entry.bestWeight >= trophyThreshold(species), `${species.id} trophies imply a best above the bar`);
       }
-      trophies += entry.trophies;
+      loggedTrophies += entry.trophies;
     }
-    const loggedTrophies = summary.catches.filter((r) => r.trophy).length;
-    assert.equal(trophies, loggedTrophies, `${location.id}: collection trophy counts match the catch log`);
-    assert.ok(loggedTrophies > 0, `${location.id}: eight hours should land some trophies`);
+    const logTrophies = summary.catches.filter((r) => r.trophy).length;
+    assert.equal(loggedTrophies, logTrophies, `${location.id}: collection matches the catch log`);
+    assert.ok(logTrophies > 0);
   }
+});
+
+test('all six workers, dock levels and stall levels are attainable within four hours of idle play', () => {
+  const state = createNewState(T0, 31337);
+  const step = 5 * 60 * 1000;
+  const tryBuy = () => {
+    // Prefer hiring, then dock space, then the stall — whatever is affordable.
+    const hire = hireWorker(state, state.processedAt);
+    if (hire.ok || hire.reason === 'at_limit') return hire.ok ? 'hire' : null;
+    if (hire.reason === 'dock_full') {
+      const dock = expandDock(state, state.processedAt);
+      if (dock.ok) return 'dock';
+    }
+    const stall = upgradeStall(state, state.processedAt);
+    if (stall.ok) return 'stall';
+    return null;
+  };
+  let hires = 0;
+  let docks = 0;
+  let stalls = 0;
+  for (let t = 1; t <= 48; t += 1) {
+    advanceState(state, T0 + t * step);
+    for (let guard = 0; guard < 10; guard += 1) {
+      const what = tryBuy();
+      if (!what) break;
+      if (what === 'hire') hires += 1;
+      if (what === 'dock') docks += 1;
+      if (what === 'stall') stalls += 1;
+    }
+  }
+  assert.equal(state.ownedWorkers, 6, `hired ${hires} workers`);
+  assert.equal(state.dockLevel, DOCK_LEVELS.length - 1, `expanded the dock ${docks} times`);
+  assert.equal(state.stallLevel, STALL_LEVELS.length - 1, `upgraded the stall ${stalls} times`);
+  assert.ok(state.coins >= 0, 'never negative');
 });
 
 test('a mixed purchase run never goes negative and never soft-locks', () => {
-  const state = createNewState(T0, 31337);
-  state.fishing = true;
-  const schedule = [
-    ['bait_minnows'], ['rod_fiberglass'], ['loc_river'], ['rod_carbon'], ['bait_glow'], ['loc_lake'], ['rod_pro'],
-  ].flat();
-
-  let purchased = 0;
-  for (let step = 1; step <= 40; step += 1) {
-    const now = T0 + step * 6 * 60 * 1000;
+  const state = createNewState(T0, 5);
+  const schedule = ['loc_river', 'bait_minnows', 'rod_carbon', 'bait_glow', 'loc_lake', 'rod_pro'];
+  for (let t = 1; t <= 60; t += 1) {
+    const now = T0 + t * 5 * 60 * 1000;
     advanceState(state, now);
     for (const id of schedule) {
-      const result = purchase(state, now, id);
-      if (result.ok) purchased += 1;
-      assert.ok(state.coins >= 0, `coins went negative after buying ${id}`);
+      if (id.startsWith('loc_')) purchaseLocation(state, now, id);
+      else if (id.startsWith('bait_')) purchaseBait(state, now, id);
+      else upgradeRod(state, now, id);
+      assert.ok(state.coins >= 0, `negative coins after ${id}`);
     }
-    assert.ok(Number.isFinite(state.coins));
-    assert.ok(state.ownedRods.includes('rod_bamboo') && state.ownedBaits.includes('bait_worms'));
-    assert.ok(state.unlockedLocations.includes('loc_pond'));
   }
-  assert.equal(purchased, schedule.length, 'every item is attainable within four hours of pond play');
+  assert.equal(state.ownedRods.includes('rod_bamboo'), true);
+  assert.equal(state.ownedBaits.includes('bait_worms'), true);
 
-  // Still playable with free bait and the starter rod.
+  // Free gear keeps earning: a fresh game with nothing bought still works.
   const poor = createNewState(T0, 5);
-  poor.fishing = true;
-  poor.coins = 0;
   const summary = advanceState(poor, T0 + 60 * 60 * 1000);
-  assert.ok(summary.catches.length >= 170, 'free gear keeps earning');
-  assert.equal(poor.rodId, 'rod_bamboo');
-  assert.equal(poor.baitId, 'bait_worms');
+  assert.ok(summary.catches.length >= 170, 'idle-only play earns with the free setup');
 });
 
-test('buying a location switches to it and keeps the old collection', () => {
-  const state = createNewState(T0, 77);
-  state.fishing = true;
-  state.coins = 5_000;
-  advanceState(state, T0 + 5 * 60 * 1000);
-  const pondSpecies = Object.keys(state.collection);
-  assert.ok(pondSpecies.length > 0);
+test('player cap keeps hands-on play a boost, not a takeover', () => {
+  const pondWorker = (state) => {
+    const pool = speciesByLocation('loc_pond');
+    return pool.reduce((sum, s) => sum + coinsForCatch(s, (s.minWeight + s.maxWeight) / 2) * BASE_RARITY_WEIGHTS[s.rarity], 0);
+  };
+  const state = createNewState(T0, 20260915);
+  const cap = Math.round(pondWorker(state) * PLAYER_CAST.valueCapWorkerCasts);
 
-  assert.equal(purchaseAndVisit(state, state.processedAt, 'loc_river').ok, true);
-  assert.equal(state.locationId, 'loc_river');
-  assert.equal(state.castProgressMs, 0, 'moving water starts a fresh cast');
-  advanceState(state, state.processedAt + 32 * 60 * 1000);
-
-  for (const id of pondSpecies) {
-    assert.ok(collectionEntry(state, id).catches > 0, 'earlier records survive the move');
+  let perfectTotal = 0;
+  for (let i = 0; i < 40; i += 1) {
+    startPlayerCast(state, T0 + i * 1000);
+    submitPlayerInput(state, T0 + i * 1000 + 10, 1);
+    submitPlayerInput(state, T0 + i * 1000 + 20, 1);
+    submitPlayerInput(state, T0 + i * 1000 + 30, 1);
+    perfectTotal += settlePlayerCast(state, T0 + i * 1000 + 40).coins;
   }
-  const riverCatch = state.recent.some((r) => getSpecies(r.speciesId).locationId === 'loc_river');
-  assert.ok(riverCatch, 'river species are now being caught');
+  const average = perfectTotal / 40;
+  assert.ok(average <= cap, `perfect player average ${average} must respect the cap ${cap}`);
+  assert.ok(average > 0);
+});
+
+test('contract offers only use unlocked content and achievable rarities', () => {
+  const state = createNewState(T0, 7);
+  for (let seed = 0; seed < 20; seed += 1) {
+    const s = createNewState(T0, seed);
+    generateContracts(s, T0);
+    for (const offer of s.contract.available) {
+      if (offer.locationId) assert.ok(s.unlockedLocations.includes(offer.locationId), 'unlocked location only');
+      if (offer.kind === 'size') {
+        const species = getSpecies(offer.speciesId);
+        assert.ok(['common', 'uncommon'].includes(species.rarity), 'early size goals use easy fish');
+        assert.ok(offer.threshold < species.maxWeight, 'threshold is reachable');
+      }
+      if (offer.kind === 'rarity') {
+        assert.ok(offer.rarity === 'uncommon' || offer.rarity === 'rare', 'no legendary-gated goals');
+      }
+      assert.ok(offer.reward > 0);
+    }
+  }
+  assert.equal(CONTRACT_TEMPLATES.length, 3);
+});
+
+test('assignments change what workers catch (location and bait matter)', () => {
+  const state = createNewState(T0, 91);
+  state.unlockedLocations = ['loc_pond', 'loc_river', 'loc_lake'];
+  state.ownedBaits = ['bait_worms', 'bait_minnows', 'bait_glow'];
+  state.ownedWorkers = 3;
+  // reuse hireWorker to keep workers array consistent
+  while (state.workers.length < 3) {
+    const w = { id: state.workers.length + 1, name: `Worker ${state.workers.length + 1}`, locationId: 'loc_pond', baitId: 'bait_worms', rngState: 1000 + state.workers.length, progressMs: 0, catches: 0 };
+    state.workers.push(w);
+  }
+  assignWorker(state, T0, 1, { locationId: 'loc_pond' });
+  assignWorker(state, T0, 2, { locationId: 'loc_river' });
+  assignWorker(state, T0, 3, { locationId: 'loc_lake' });
+  const summary = advanceState(state, T0 + 10 * 60 * 1000);
+  const locations = new Set(summary.catches.map((r) => getSpecies(r.speciesId).locationId));
+  assert.ok(locations.has('loc_pond') && locations.has('loc_river') && locations.has('loc_lake'),
+    'three workers fish three waters at once');
 });

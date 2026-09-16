@@ -391,6 +391,81 @@ h3 { font-size: 0.95rem; }
   .btn { flex: 1 1 auto; }
 }
 
+/* --------------------------------------------------- dock business styles */
+.dock-body { margin-top: 16px; display: grid; gap: 16px; }
+.dock-section h4 { margin: 0 0 8px; font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+.dock-summary {
+  display: flex; gap: 8px 18px; flex-wrap: wrap;
+  background: #0c1c1f; border: 1px solid var(--line); border-radius: var(--radius-sm);
+  padding: 8px 12px; font-size: 0.82rem; margin-bottom: 10px;
+}
+.worker-list { display: grid; gap: 8px; }
+.worker {
+  border: 1px solid var(--line); border-left-width: 4px; border-radius: var(--radius-sm);
+  background: var(--panel); padding: 9px 12px;
+}
+.worker-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.worker-name { font-weight: 600; }
+.worker-est { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--teal); }
+.worker-controls { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 6px; }
+.worker-controls label { display: flex; gap: 6px; align-items: center; font-size: 0.82rem; color: var(--muted); }
+.worker-controls select {
+  font: inherit; font-size: 0.85rem; color: var(--text);
+  background: #0d2023; border: 1px solid var(--line); border-radius: 7px; padding: 4px 8px;
+}
+.worker-stats { margin-left: auto; font-size: 0.8rem; }
+.hire-row, .invest-row { margin-top: 8px; }
+.owned-note { color: var(--teal); font-size: 0.88rem; }
+
+/* ------------------------------------------------------- reel minigame */
+.reel-track {
+  position: relative; height: 26px; border-radius: 999px;
+  background: #0a1f22; border: 1px solid var(--line); overflow: hidden; margin: 8px 0;
+}
+.reel-target {
+  position: absolute; top: 0; bottom: 0;
+  background: linear-gradient(180deg, #4fb3a5cc, #2c7f78cc);
+  border-left: 2px solid var(--coin); border-right: 2px solid var(--coin);
+}
+.reel-marker {
+  position: absolute; top: -2px; bottom: -2px; width: 4px; border-radius: 2px;
+  background: var(--coin); box-shadow: 0 0 8px var(--coin);
+}
+.reel-stage { margin: 0; font-weight: 600; }
+.reel-hint { margin: 4px 0; font-size: 0.86rem; color: var(--muted); }
+.btn-reel, .btn-cast { min-width: 160px; }
+.reel-instructions { margin: 6px 0 0; font-size: 0.86rem; color: #b6cbc6; }
+.reel-preview-caption { margin: 4px 2px 0; font-size: 0.78rem; }
+.scene-preview { margin-top: 8px; padding: 10px 12px; }
+.fish-result { border: 1px solid var(--teal-deep); border-radius: var(--radius-sm); padding: 10px 12px; background: #0e2427; }
+.fish-result p { margin: 2px 0; }
+.cast-cta { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
+.fish-header p { margin: 2px 0; }
+.tag-you { color: var(--coin); }
+
+/* ------------------------------------------------------------ contracts */
+.contract-offers { display: grid; gap: 10px; }
+.contract-offer, .contract-active {
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+  background: var(--panel); padding: 11px 12px; display: grid; gap: 6px;
+}
+.contract-active.complete { border-color: var(--teal); }
+.contract-goal { margin: 0; font-weight: 600; }
+.contract-reward { margin: 0; font-size: 0.88rem; }
+.contract-reward strong { color: var(--coin); }
+.contract-count { margin: 0; font-size: 0.88rem; font-variant-numeric: tabular-nums; }
+.contract-progressbar {
+  height: 10px; border-radius: 999px; background: #0a1f22;
+  border: 1px solid var(--line); overflow: hidden;
+}
+.contract-progressfill { height: 100%; background: linear-gradient(90deg, var(--teal-deep), var(--teal)); transition: width 0.3s; }
+.contract-active .row { display: flex; gap: 8px; flex-wrap: wrap; }
+
+@media (max-width: 420px) {
+  .worker-controls select { max-width: 130px; }
+  .btn-reel, .btn-cast { width: 100%; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
   .cast-fill { transition: none; }

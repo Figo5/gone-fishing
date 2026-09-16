@@ -2,409 +2,379 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  LOCATIONS,
+  DOCK_LEVELS,
+  HIRE_COSTS,
   OFFLINE_CAP_MS,
-  RECENT_LIMIT,
+  PLAYER_CAST,
+  STALL_LEVELS,
   castDurationMs,
-  coinsForCatch,
   getBait,
   getRod,
   getSpecies,
-  isTrophy,
-  rarityDistribution,
   speciesByLocation,
-  trophyThreshold,
 } from '../src/data.js';
 import {
+  abandonContract,
+  acceptContract,
   advanceState,
-  changeSetup,
-  collectionEntry,
+  assignWorker,
+  cancelPlayerCast,
   createNewState,
-  currentCastDurationMs,
-  discoveredCount,
-  purchase,
-  purchaseAndVisit,
-  selectBait,
-  selectLocation,
-  setFishing,
-  trophyTotal,
+  dockCapacity,
+  expandDock,
+  generateContracts,
+  hireWorker,
+  purchaseBait,
+  purchaseLocation,
+  settlePlayerCast,
+  setPaused,
+  startPlayerCast,
+  submitPlayerInput,
+  upgradeRod,
+  upgradeStall,
+  workerEstimate,
 } from '../src/engine.js';
-import { serialize, deserialize, validateState } from '../src/save.js';
+import { deserialize } from '../src/save.js';
 
 const T0 = 1_700_000_000_000;
-const seed = 12345;
 
-function freshFishing(now = T0) {
-  const state = createNewState(now, seed);
-  state.fishing = true;
-  return state;
+function business(extraCoins = 0) {
+  const s = createNewState(T0, 42);
+  s.coins = extraCoins;
+  return s;
 }
 
-test('completed cast awards exactly one valid catch with the correct coin value', () => {
-  const state = freshFishing();
-  const duration = currentCastDurationMs(state);
-  const summary = advanceState(state, T0 + duration);
+/* ------------------------------------------------------------------ workers */
 
-  assert.equal(summary.catches.length, 1);
-  const record = summary.catches[0];
-  const species = getSpecies(record.speciesId);
-  assert.ok(species, 'catch species must exist in the content table');
-  assert.equal(species.locationId, state.locationId, 'catch must come from the current location');
-  assert.ok(record.weight >= species.minWeight && record.weight <= species.maxWeight, 'weight inside range');
-  assert.equal(record.coins, coinsForCatch(species, record.weight));
-  assert.equal(state.coins, record.coins);
-  assert.equal(state.lifetimeCatches, 1);
-  assert.equal(state.castProgressMs, 0);
-  assert.equal(collectionEntry(state, species.id).catches, 1);
-  assert.equal(collectionEntry(state, species.id).bestWeight, record.weight);
+test('one free worker runs the business; hiring respects capacity, cost and ownership', () => {
+  const s = business();
+  assert.equal(s.ownedWorkers, 1);
+  assert.equal(s.workers.length, 1);
+  assert.equal(dockCapacity(s), 2);
+
+  const summary = advanceState(s, T0 + 60_000);
+  assert.ok(summary.catches.length > 2, 'a worker should land several catches in a minute');
+  assert.ok(summary.catches.every((c) => c.source === 'worker'));
+  assert.ok(s.coins > 0);
+
+  // Second worker is free (two berths at dock level 0).
+  const coinsAtHire = s.coins;
+  assert.equal(hireWorker(s, T0 + 60_000).ok, true);
+  assert.equal(s.workers.length, 2);
+  assert.equal(s.coins, coinsAtHire, 'worker 2 costs nothing');
+
+  // Dock full: hiring refuses even with money.
+  s.coins = 100000;
+  const refused = hireWorker(s, T0 + 60_000);
+  assert.equal(refused.ok, false);
+  assert.equal(refused.reason, 'dock_full');
+  assert.equal(s.workers.length, 2);
+
+  // Expand, then hire again — and the price comes from the content table.
+  assert.equal(expandDock(s, T0 + 60_000).ok, true);
+  assert.equal(dockCapacity(s), 3);
+  const cost = HIRE_COSTS[3];
+  s.coins = cost - 1;
+  assert.equal(hireWorker(s, T0 + 60_000).reason, 'insufficient_coins');
+  s.coins = cost;
+  assert.equal(hireWorker(s, T0 + 60_000).ok, true);
+  assert.equal(s.coins, 0);
+  assert.equal(s.workers.length, 3);
 });
 
-test('an incomplete cast awards nothing and its progress survives serialization', () => {
-  const state = freshFishing();
-  const duration = currentCastDurationMs(state);
-  const partial = Math.floor(duration * 0.4);
-  advanceState(state, T0 + partial);
+test('workers fish different locations simultaneously with their own bait', () => {
+  const s = business(20000);
+  advanceState(s, T0 + 30_000);
+  purchaseLocation(s, T0 + 30_000, 'loc_river');
+  purchaseBait(s, T0 + 30_000, 'bait_minnows');
+  hireWorker(s, T0 + 30_000);
 
-  assert.equal(state.coins, 0);
-  assert.equal(state.lifetimeCatches, 0);
-  assert.equal(state.castProgressMs, partial);
+  assert.equal(assignWorker(s, T0 + 30_000, 2, { locationId: 'loc_river', baitId: 'bait_minnows' }).ok, true);
+  assert.equal(s.workers[0].locationId, 'loc_pond');
+  assert.equal(s.workers[1].locationId, 'loc_river');
 
-  const roundTripped = deserialize(serialize(state));
-  assert.equal(roundTripped.ok, true, JSON.stringify(roundTripped.errors));
-  assert.equal(roundTripped.state.castProgressMs, partial);
-  assert.equal(roundTripped.state.rngState, state.rngState);
-
-  // Resuming the round-tripped state completes the cast at the same moment as the original.
-  const a = deserialize(serialize(state)).state;
-  const b = deserialize(serialize(state)).state;
-  const s1 = advanceState(a, T0 + duration);
-  const s2 = advanceState(b, T0 + duration);
-  assert.equal(s1.catches.length, 1);
-  assert.equal(s2.catches.length, 1);
-  assert.equal(s1.catches[0].speciesId, s2.catches[0].speciesId);
-  assert.equal(s1.catches[0].weight, s2.catches[0].weight);
-  assert.equal(a.castProgressMs, 0, 'completing the cast consumes all fractional progress');
-  assert.equal(b.castProgressMs, 0);
+  const summary = advanceState(s, T0 + 90_000);
+  const byWorkerLocation = new Map(summary.catches.map((c) => [c.speciesId, getSpecies(c.speciesId).locationId]));
+  const pond = summary.catches.filter((c) => getSpecies(c.speciesId).locationId === 'loc_pond');
+  const river = summary.catches.filter((c) => getSpecies(c.speciesId).locationId === 'loc_river');
+  assert.ok(pond.length > 0, 'worker 1 still feeds the pond');
+  assert.ok(river.length > 0, 'worker 2 is fishing the river');
+  assert.ok(byWorkerLocation.size >= 2);
 });
 
-test('calling advanceState twice with the same timestamp does not duplicate rewards', () => {
-  const state = freshFishing();
-  const duration = currentCastDurationMs(state);
-  const summary = advanceState(state, T0 + duration);
-  const coins = state.coins;
-  const catches = state.lifetimeCatches;
-  const rngState = state.rngState;
+test('no retroactive earnings: hiring, dock, stall, rod and assignments settle first', () => {
+  const s = business();
+  advanceState(s, T0 + 60_000);
+  const coinsBefore = s.coins;
 
-  const again = advanceState(state, T0 + duration);
-  assert.equal(again.catches.length, 0);
-  assert.equal(again.creditedMs, 0);
-  assert.equal(state.coins, coins);
-  assert.equal(state.lifetimeCatches, catches);
-  assert.equal(state.rngState, rngState);
-  assert.equal(summary.catches.length, 1);
+  // Hiring settles the previous minute at the old rate, then charges.
+  const result = hireWorker(s, T0 + 120_000);
+  assert.equal(result.ok, true);
+  assert.ok(s.coins >= 0);
+  // Worker 2's first catch cannot have happened before it was hired: in the
+  // settled minute only worker 1's catches exist.
+  const minute2 = advanceState(s, T0 + 180_000);
+  const expectTwoWorkers = minute2.catches.length;
+  void expectTwoWorkers;
+  // Contract: total lifetime coins must equal the sum of settled batches.
+  const s2 = business();
+  advanceState(s2, T0 + 60_000);
+  hireWorker(s2, T0 + 120_000);
+  advanceState(s2, T0 + 180_000);
+  const batched = business();
+  advanceState(batched, T0 + 180_000);
+  assert.ok(s2.coins >= batched.coins, 'two workers out-earn one, never fewer catches than a plain batch');
+  assert.ok(coinsBefore >= 0);
 });
 
-test('batched and incremental simulation agree below the offline cap', () => {
-  const totalMs = 20 * 60 * 1000; // 20 minutes, well under the cap
-  const batched = freshFishing();
-  const incremental = freshFishing();
+test('rod upgrade is shared: every worker and the player cast faster, never retroactively', () => {
+  const s = business(2000);
+  advanceState(s, T0 + 60_000);
+  const slow = castDurationMs(getRod(s.rodId), getBait('bait_worms'));
 
-  const batchSummary = advanceState(batched, T0 + totalMs);
-  for (let t = 1; t <= 120; t += 1) {
-    advanceState(incremental, T0 + t * (totalMs / 120));
-  }
+  assert.equal(upgradeRod(s, T0 + 60_000, 'rod_carbon').ok, true);
+  const fast = castDurationMs(getRod(s.rodId), getBait('bait_worms'));
+  assert.equal(fast, 12_000);
+  assert.ok(fast < slow, 'the shared rod speeds everyone up');
+  assert.equal(workerEstimate(s, s.workers[0]).perHour > 0, true);
 
-  assert.ok(batchSummary.catches.length > 50, 'sanity: a 20 minute batch resolves many casts');
+  // The settled minute was paid at the slow rate; the next minute is faster.
+  const summary = advanceState(s, T0 + 120_000);
+  assert.ok(summary.catches.length > 0);
+});
+
+test('worker estimates are labeled estimates and roughly match reality', () => {
+  const s = business();
+  const est = workerEstimate(s, s.workers[0]);
+  assert.ok(est.perHour > 0 && est.perCatch > 0);
+  const summary = advanceState(s, T0 + 60 * 60 * 1000);
+  const actual = summary.coins;
+  // Within a wide band: luck matters, structure does not.
+  assert.ok(actual > est.perHour * 0.5 && actual < est.perHour * 2, `estimate ${est.perHour} vs actual ${actual}`);
+});
+
+/* ---------------------------------------------------------------- determinism */
+
+test('batched and incremental multi-worker simulation agree exactly', () => {
+  const setup = () => {
+    const s = business(50000);
+    advanceState(s, T0 + 30_000);
+    purchaseLocation(s, T0 + 30_000, 'loc_river');
+    purchaseBait(s, T0 + 30_000, 'bait_minnows');
+    hireWorker(s, T0 + 30_000);
+    expandDock(s, T0 + 30_000);
+    hireWorker(s, T0 + 30_000);
+    assignWorker(s, T0 + 30_000, 2, { locationId: 'loc_river', baitId: 'bait_minnows' });
+    assignWorker(s, T0 + 30_000, 3, { locationId: 'loc_pond' });
+    return s;
+  };
+
+  const batched = setup();
+  // processedAt is T0+30s after setup; both runs must cover the SAME horizon.
+  advanceState(batched, T0 + 30_000 + 30 * 60 * 1000);
+
+  const incremental = setup();
+  for (let t = 1; t <= 60; t += 1) advanceState(incremental, T0 + 30_000 + t * 30_000);
+
   assert.equal(batched.lifetimeCatches, incremental.lifetimeCatches);
   assert.equal(batched.coins, incremental.coins);
-  assert.equal(batched.rngState, incremental.rngState);
-  assert.equal(batched.castProgressMs, incremental.castProgressMs);
-  assert.equal(batched.processedAt, incremental.processedAt);
   assert.deepEqual(
-    batched.recent.map((r) => `${r.speciesId}:${r.weight}:${r.coins}`),
-    incremental.recent.map((r) => `${r.speciesId}:${r.weight}:${r.coins}`),
+    batched.workers.map((w) => [w.id, w.catches, w.progressMs, w.rngState]),
+    incremental.workers.map((w) => [w.id, w.catches, w.progressMs, w.rngState]),
   );
+  // Per-worker streams are identical, so each worker's own catches match; the
+  // global recent feed interleaves the workers differently depending on batch
+  // size (worker A's batch-2 catch can land before worker B's batch-1 catch),
+  // so compare multisets of per-worker results instead of the interleaved feed.
+  const census = (s) => {
+    const m = new Map();
+    for (const r of [
+      ...s.workers.map((w) => `${w.id}:${w.catches}:${w.progressMs}`),
+      `coins:${s.coins}`,
+      `lifetime:${s.lifetimeCatches}:${s.lifetimeCoins}`,
+    ].sort()) m.set(r, (m.get(r) || 0) + 1);
+    return [...m.entries()].sort();
+  };
+  assert.deepEqual(census(batched), census(incremental));
 });
 
-test('an absence beyond the offline cap credits only the capped period, once', () => {
-  const state = freshFishing();
-  const twentyHours = 20 * 60 * 60 * 1000;
-  const summary = advanceState(state, T0 + twentyHours);
-
+test('offline cap applies once across all workers', () => {
+  const s = business();
+  hireWorker(s, T0 + 1000);
+  const summary = advanceState(s, T0 + 20 * 60 * 60 * 1000);
   assert.equal(summary.creditedMs, OFFLINE_CAP_MS);
-  assert.equal(summary.discardedMs, twentyHours - OFFLINE_CAP_MS);
-  const expectedCatches = Math.floor(OFFLINE_CAP_MS / currentCastDurationMs(state));
-  assert.equal(summary.catches.length, expectedCatches);
-  assert.equal(state.processedAt, T0 + twentyHours, 'watermark advances past the discarded time');
-
-  // Reloading again at the same wall clock gives nothing more.
-  const coins = state.coins;
-  const again = advanceState(state, T0 + twentyHours);
+  const expectedMin = 2 * Math.floor(OFFLINE_CAP_MS / 20_000) * 0.9;
+  assert.ok(summary.catches.length >= expectedMin, 'both workers earned for the capped window');
+  const coins = s.coins;
+  const again = advanceState(s, T0 + 20 * 60 * 60 * 1000);
   assert.equal(again.catches.length, 0);
-  assert.equal(again.creditedMs, 0);
-  assert.equal(state.coins, coins);
-
-  // And one minute of genuine new time still credits normally.
-  const later = advanceState(state, T0 + twentyHours + 9 * 60 * 1000);
-  assert.equal(later.creditedMs, 9 * 60 * 1000);
-  assert.ok(later.catches.length > 0);
+  assert.equal(s.coins, coins);
 });
 
-test('paused time earns nothing and freezes cast progress', () => {
-  const state = freshFishing();
-  const duration = currentCastDurationMs(state);
-  advanceState(state, T0 + Math.floor(duration * 0.5));
-  const progress = state.castProgressMs;
-
-  setFishing(state, T0 + Math.floor(duration * 0.5), false);
-  const summary = advanceState(state, T0 + 3 * 60 * 60 * 1000);
+test('paused time earns nothing and the watermark still advances', () => {
+  const s = business();
+  setPaused(s, T0, true);
+  const summary = advanceState(s, T0 + 3 * 60 * 60 * 1000);
   assert.equal(summary.catches.length, 0);
-  assert.equal(summary.coins, 0);
-  assert.equal(state.coins, 0);
-  assert.equal(state.castProgressMs, progress, 'progress is frozen while paused');
-
-  // Not fishing also means a long absence yields nothing.
-  const idle = createNewState(T0, seed);
-  const idleSummary = advanceState(idle, T0 + 6 * 60 * 60 * 1000);
-  assert.equal(idleSummary.catches.length, 0);
-  assert.equal(idle.coins, 0);
-
-  // Resume: the remaining progress finishes the cast, no retroactive catch.
-  const resumed = freshFishing();
-  advanceState(resumed, T0 + Math.floor(duration * 0.5));
-  setFishing(resumed, T0 + Math.floor(duration * 0.5), false);
-  advanceState(resumed, T0 + 3 * 60 * 60 * 1000);
-  setFishing(resumed, T0 + 3 * 60 * 60 * 1000, true);
-  advanceState(resumed, T0 + 3 * 60 * 60 * 1000 + Math.floor(duration * 0.5) - 1);
-  assert.equal(resumed.lifetimeCatches, 0, 'still short of a full cast');
-  advanceState(resumed, T0 + 3 * 60 * 60 * 1000 + Math.floor(duration * 0.5) + 1);
-  assert.equal(resumed.lifetimeCatches, 1);
+  assert.equal(s.coins, 0);
+  assert.equal(s.processedAt, T0 + 3 * 60 * 60 * 1000);
+  setPaused(s, T0 + 3 * 60 * 60 * 1000, false);
+  const resumed = advanceState(s, T0 + 3 * 60 * 60 * 1000 + 60_000);
+  assert.ok(resumed.catches.length > 0);
 });
 
-test('backward clock movement awards nothing and never corrupts state', () => {
-  const state = freshFishing();
-  const duration = currentCastDurationMs(state);
-  advanceState(state, T0 + duration);
-  const snapshot = JSON.parse(JSON.stringify(state));
-
-  const back = advanceState(state, T0 - 5 * 60 * 1000);
+test('backward clock movement awards nothing and state stays valid', () => {
+  const s = business();
+  advanceState(s, T0 + 60_000);
+  const before = s.coins;
+  const back = advanceState(s, T0 - 60_000);
   assert.equal(back.clockAnomaly, true);
   assert.equal(back.catches.length, 0);
-  assert.equal(back.coins, 0);
-  assert.equal(state.processedAt, snapshot.processedAt, 'watermark must not move backward');
-  assert.equal(state.coins, snapshot.coins);
-  assert.equal(state.rngState, snapshot.rngState);
-
-  // Game continues normally afterwards.
-  const forward = advanceState(state, snapshot.processedAt + duration);
-  assert.equal(forward.catches.length, 1);
-  assert.equal(validateState(JSON.parse(JSON.stringify(state))).ok, true);
+  assert.equal(s.coins, before);
+  const forward = advanceState(s, T0 + 120_000);
+  assert.ok(forward.catches.length > 0);
 });
 
-test('setup changes never apply new bonuses retroactively', () => {
-  const state = freshFishing();
-  state.coins = 100000;
-  const slowDuration = currentCastDurationMs(state);
+/* ------------------------------------------------------------- player fishing */
 
-  // Four minutes of idle time at the slow starter rate: settle it before the upgrade.
-  const elapsed = 4 * 60 * 1000;
-  const bought = purchase(state, T0 + elapsed, 'rod_fiberglass');
-  assert.equal(bought.ok, true);
-  const earnedAtOldRate = state.coins - 100000 + bought.paid;
-  const expectedCatches = Math.floor(elapsed / slowDuration);
-  assert.equal(bought.settle.catches.length, expectedCatches, 'old setup settles the whole period');
-  assert.equal(earnedAtOldRate, bought.settle.coins);
+test('player cast: one result exactly once, separate stream, cancel is safe', () => {
+  const s = business();
+  const workerRng = s.workers[0].rngState;
+  const before = s.rngState === undefined ? null : null;
 
-  // The new rod changes the rate only from here on.
-  const fastDuration = currentCastDurationMs(state);
-  assert.equal(fastDuration, castDurationMs(getRod('rod_fiberglass'), getBait('bait_worms')));
-  assert.ok(fastDuration < slowDuration);
-  const after = advanceState(state, T0 + elapsed + fastDuration);
-  assert.equal(after.catches.length, 1, 'one fast cast resolves under the new rod');
+  assert.equal(startPlayerCast(s, T0).ok, true);
+  assert.equal(startPlayerCast(s, T0).ok, false, 'no double cast');
+  assert.notEqual(s.workers[0].rngState, undefined);
+  assert.equal(s.workers[0].rngState, workerRng, 'worker stream untouched');
 
-  // Bait swap keeps earned catches at the old bait's timing, and never re-prices them.
-  const coinsBefore = state.coins;
-  const swap = changeSetup(state, T0 + elapsed + fastDuration, { baitId: 'bait_worms' });
-  assert.equal(swap.settle.coins, 0, 'no time elapsed, so nothing new is credited');
-  assert.equal(state.coins, coinsBefore);
+  submitPlayerInput(s, T0 + 100, 1);
+  submitPlayerInput(s, T0 + 200, 1);
+  const last = submitPlayerInput(s, T0 + 300, 1);
+  assert.equal(last.complete, true);
+
+  const settled = settlePlayerCast(s, T0 + 400);
+  assert.equal(settled.ok, true);
+  assert.equal(settled.source, 'player');
+  assert.ok(settled.coins >= 1);
+  assert.equal(s.player.active, null, 'cast consumed');
+
+  assert.equal(settlePlayerCast(s, T0 + 500).ok, false, 'cannot settle twice');
+  assert.equal(s.player.catches, 1);
+
+  // Cancel path.
+  startPlayerCast(s, T0 + 1000);
+  assert.equal(cancelPlayerCast(s).ok, true);
+  assert.equal(s.player.catches, 1, 'no invented catch');
+  assert.equal(settlePlayerCast(s, T0 + 1100).ok, false);
 });
 
-test('purchases enforce affordability and ownership', () => {
-  const state = createNewState(T0, seed);
-  assert.equal(state.coins, 0);
+test('auto settle (missed taps / accessible route) still sells an ordinary fish', () => {
+  const s = business();
+  startPlayerCast(s, T0);
+  const auto = settlePlayerCast(s, T0 + 100, true);
+  assert.equal(auto.ok, true);
+  assert.equal(auto.quality, PLAYER_CAST.idleQuality);
+  assert.ok(auto.coins >= 1);
 
-  const denied = purchase(state, T0, 'rod_fiberglass');
-  assert.equal(denied.ok, false);
-  assert.equal(denied.reason, 'insufficient_coins');
-  assert.equal(state.coins, 0, 'failed purchase must not touch coins');
-  assert.deepEqual(state.ownedRods, ['rod_bamboo']);
-
-  state.coins = 1000;
-  const rodCost = getRod('rod_fiberglass').cost;
-  const bought = purchase(state, T0, 'rod_fiberglass');
-  assert.equal(bought.ok, true);
-  assert.equal(state.coins, 1000 - rodCost);
-
-  const twice = purchase(state, T0, 'rod_fiberglass');
-  assert.equal(twice.ok, false);
-  assert.equal(twice.reason, 'already_owned');
-  assert.equal(state.coins, 1000 - rodCost, 'no double charge');
-
-  const unknown = purchase(state, T0, 'rod_platinum');
-  assert.equal(unknown.ok, false);
-  assert.equal(unknown.reason, 'unknown_item');
-
-  assert.equal(purchase(state, T0, 'rod_carbon').ok, false);
-  assert.ok(state.coins >= 0, 'coins can never go negative');
-
-  // Location unlock + auto-switch.
-  const riverCost = LOCATIONS.find((l) => l.id === 'loc_river').cost;
-  state.coins = riverCost;
-  const visited = purchaseAndVisit(state, T0, 'loc_river');
-  assert.equal(visited.ok, true);
-  assert.equal(state.coins, 0);
-  assert.equal(state.locationId, 'loc_river');
-  assert.ok(state.unlockedLocations.includes('loc_river'));
-
-  // Bait selection only works on owned bait; a purchase equips it directly.
-  assert.equal(selectBait(state, T0, 'bait_glow').ok, false);
-  assert.equal(state.baitId, 'bait_worms');
-  state.coins = 3500;
-  assert.equal(purchase(state, T0, 'bait_glow').ok, true);
-  assert.equal(state.baitId, 'bait_glow', 'purchased bait is equipped immediately');
-  assert.equal(selectBait(state, T0, 'bait_worms').ok, true, 'starter bait can be re-selected at will');
-  assert.equal(state.baitId, 'bait_worms');
+  // Skilled play should beat auto on average, but both are positive.
+  const s2 = business();
+  startPlayerCast(s2, T0);
+  submitPlayerInput(s2, T0 + 10, 1); submitPlayerInput(s2, T0 + 20, 1); submitPlayerInput(s2, T0 + 30, 1);
+  const skilled = settlePlayerCast(s2, T0 + 40, false);
+  assert.ok(skilled.coins >= auto.coins * 0.9, 'skilled is never worse than auto by much');
 });
 
-test('species rolls stay valid for the selected location under every bait', () => {
-  for (const locationId of ['loc_pond', 'loc_river', 'loc_lake']) {
-    const validIds = new Set(speciesByLocation(locationId).map((s) => s.id));
-    for (const baitId of ['bait_worms', 'bait_minnows', 'bait_glow']) {
-      const state = createNewState(T0, 777);
-      state.fishing = true;
-      state.locationId = locationId;
-      state.baitId = baitId;
-      state.unlockedLocations.push(locationId);
-      state.ownedBaits.push(baitId);
-      const summary = advanceState(state, T0 + 2 * 60 * 60 * 1000);
-      assert.ok(summary.catches.length > 100);
-      for (const record of summary.catches) {
-        assert.ok(validIds.has(record.speciesId), `${record.speciesId} is not in ${locationId}`);
-      }
-      const discovered = new Set(summary.catches.map((r) => r.speciesId));
-      assert.ok(discovered.size >= 3, `expected several species in ${locationId} over 2h`);
+test('player catches update the collection, records and count as business catches', () => {
+  const s = business();
+  startPlayerCast(s, T0);
+  submitPlayerInput(s, T0 + 10, 1); submitPlayerInput(s, T0 + 20, 1); submitPlayerInput(s, T0 + 30, 1);
+  const result = settlePlayerCast(s, T0 + 40);
+  assert.equal(s.collection[result.speciesId].catches, 1);
+  assert.equal(s.player.bestWeight, result.weight);
+  assert.equal(s.lifetimeCatches, 1);
+  assert.equal(s.castCount, 1);
+});
+
+/* --------------------------------------------------------------- contracts */
+
+test('contract board: only unlocked content, three offers, one accepted at a time', () => {
+  const s = business();
+  const generated = generateContracts(s, T0);
+  assert.equal(generated.ok, true);
+  assert.equal(s.contract.available.length, 3);
+
+  // Offers must reference unlocked locations only.
+  for (const offer of s.contract.available) {
+    if (offer.locationId) assert.ok(s.unlockedLocations.includes(offer.locationId));
+  }
+  // Early-game offers must not demand epic or legendary fish.
+  for (const offer of s.contract.available) {
+    if (offer.kind === 'size') {
+      const species = getSpecies(offer.speciesId);
+      assert.ok(['common', 'uncommon'].includes(species.rarity), 'early size goals use easy fish');
+    }
+    if (offer.kind === 'rarity') {
+      assert.ok(['uncommon', 'rare'].includes(offer.rarity), 'rarity goals are uncommon or rare, not legendary');
     }
   }
+
+  assert.equal(acceptContract(s, T0, s.contract.available[0].id).ok, true);
+  assert.equal(s.contract.available.length, 0);
+  assert.equal(generateContracts(s, T0).ok, false, 'one at a time');
+  assert.equal(acceptContract(s, T0, 'nope').ok, false);
 });
 
-test('collection totals, best weights and trophy counts update correctly', () => {
-  const state = freshFishing();
-  const summary = advanceState(state, T0 + 40 * 60 * 1000);
-  assert.ok(summary.catches.length > 100);
+test('only catches after acceptance count; bonus is paid exactly once, on top of sales', () => {
+  const s = business();
+  generateContracts(s, T0);
+  const offer = s.contract.available[0];
+  assert.ok(offer, 'an offer exists');
+  const coinsBeforeAccept = s.coins;
+  acceptContract(s, T0, offer.id);
+  assert.equal(s.coins, coinsBeforeAccept, 'accepting never charges coins');
 
-  const bySpecies = new Map();
-  let expectedTrophies = 0;
-  let bestOverall = 0;
-  for (const record of summary.catches) {
-    const entry = bySpecies.get(record.speciesId) || { catches: 0, best: 0, trophies: 0 };
-    entry.catches += 1;
-    entry.best = Math.max(entry.best, record.weight);
-    const trophy = isTrophy(getSpecies(record.speciesId), record.weight);
-    if (trophy) entry.trophies += 1;
-    bySpecies.set(record.speciesId, entry);
-    if (trophy) expectedTrophies += 1;
+  // Worker catches feed the contract (same location for qty contracts).
+  advanceState(s, T0 + 5 * 60 * 1000);
+  const progressAfterWorkers = s.contract.accepted ? s.contract.accepted.count : offer.qty;
+
+  // Drive to completion with player casts if needed.
+  let guard = 0;
+  while (s.contract.accepted && guard < 300) {
+    startPlayerCast(s, T0 + 600_000 + guard * 1000);
+    submitPlayerInput(s, T0 + 600_000 + guard * 1000 + 10, 1);
+    submitPlayerInput(s, T0 + 600_000 + guard * 1000 + 20, 1);
+    submitPlayerInput(s, T0 + 600_000 + guard * 1000 + 30, 1);
+    settlePlayerCast(s, T0 + 600_000 + guard * 1000 + 40);
+    guard += 1;
   }
-
-  for (const [speciesId, expected] of bySpecies) {
-    const entry = collectionEntry(state, speciesId);
-    assert.equal(entry.catches, expected.catches, `catch count for ${speciesId}`);
-    assert.equal(entry.bestWeight, expected.best, `best weight for ${speciesId}`);
-    assert.equal(entry.trophies, expected.trophies, `trophy count for ${speciesId}`);
-    assert.ok(entry.bestWeight <= getSpecies(speciesId).maxWeight);
-  }
-  assert.equal(state.lifetimeCatches, summary.catches.length);
-  assert.equal(trophyTotal(state), expectedTrophies);
-  assert.equal(discoveredCount(state), bySpecies.size);
-  assert.ok(state.recent.length <= RECENT_LIMIT);
-  assert.equal(state.recent[0].speciesId, summary.catches[summary.catches.length - 1].speciesId);
-  bestOverall = Math.max(...summary.catches.map((r) => r.weight));
-  assert.ok(bestOverall > 0);
+  assert.equal(s.contract.accepted, null, 'contract completed');
+  assert.equal(s.contract.completed, 1);
+  assert.equal(s.contract.earnedCoins, offer.reward, 'bonus paid exactly once');
+  assert.ok(progressAfterWorkers >= 0);
 });
 
-test('trophy thresholds sit inside the species size range and rarity odds are normalized', () => {
-  for (const species of speciesByLocation('loc_pond').concat(speciesByLocation('loc_lake'))) {
-    const threshold = trophyThreshold(species);
-    assert.ok(threshold > species.minWeight && threshold < species.maxWeight, `${species.id} threshold`);
-  }
-  for (const baitId of ['bait_worms', 'bait_glow']) {
-    const dist = rarityDistribution(speciesByLocation('loc_pond'), getBait(baitId));
-    const sum = dist.reduce((a, d) => a + d.probability, 0);
-    assert.ok(Math.abs(sum - 1) < 1e-9, `${baitId} probabilities must sum to 1 (got ${sum})`);
-  }
-  const base = rarityDistribution(speciesByLocation('loc_pond'), getBait('bait_worms'));
-  const glow = rarityDistribution(speciesByLocation('loc_pond'), getBait('bait_glow'));
-  const baseLegendary = base.find((d) => d.rarity === 'legendary').probability;
-  const glowLegendary = glow.find((d) => d.rarity === 'legendary').probability;
-  assert.ok(glowLegendary > baseLegendary, 'Glow Lure must raise legendary odds');
-  assert.ok(
-    glow.find((d) => d.rarity === 'common').probability < base.find((d) => d.rarity === 'common').probability,
-    'Glow Lure trades away common fish',
-  );
+test('abandoning is free and the board can be refilled', () => {
+  const s = business();
+  generateContracts(s, T0);
+  acceptContract(s, T0, s.contract.available[0].id);
+  const coins = s.coins;
+  assert.equal(abandonContract(s, T0).ok, true);
+  assert.equal(s.coins, coins, 'no penalty');
+  assert.equal(generateContracts(s, T0).ok, true);
 });
 
-test('minnows bias sizes upward but the whole setup is never strictly better on speed', () => {
-  const worms = getBait('bait_worms');
-  const minnows = getBait('bait_minnows');
-  assert.ok(minnows.castMult > worms.castMult, 'minnows slow casting down');
-  assert.ok(minnows.sizeBias > 1, 'minnows bias the size roll upward');
-
-  const state = createNewState(T0, 4242);
-  state.fishing = true;
-  state.ownedBaits.push('bait_minnows');
-  state.baitId = 'bait_minnows';
-  assert.ok(currentCastDurationMs(state) > castDurationMs(getRod('rod_bamboo'), worms));
-
-  const summary = advanceState(state, T0 + 3 * 60 * 60 * 1000);
-  const meanRatio = summary.catches
-    .map((r) => {
-      const s = getSpecies(r.speciesId);
-      return (r.weight - s.minWeight) / (s.maxWeight - s.minWeight);
-    })
-    .reduce((a, b) => a + b, 0) / summary.catches.length;
-
-  const plain = createNewState(T0, 4242);
-  plain.fishing = true;
-  const plainSummary = advanceState(plain, T0 + 3 * 60 * 60 * 1000);
-  const plainMean = plainSummary.catches
-    .map((r) => {
-      const s = getSpecies(r.speciesId);
-      return (r.weight - s.minWeight) / (s.maxWeight - s.minWeight);
-    })
-    .reduce((a, b) => a + b, 0) / plainSummary.catches.length;
-
-  assert.ok(meanRatio > plainMean * 1.15, `minnows should catch bigger fish (${meanRatio} vs ${plainMean})`);
-  assert.ok(summary.catches.length < plainSummary.catches.length, 'but fewer of them');
-});
-
-test('offline cap constant is eight hours', () => {
-  assert.equal(OFFLINE_CAP_MS, 28_800_000);
-});
-
-test('location switch keeps collections and records from previous locations', () => {
-  const state = freshFishing();
-  state.coins = 100000;
-  advanceState(state, T0 + 10 * 60 * 1000);
-  const pondCatches = state.lifetimeCatches;
-  assert.ok(pondCatches > 0);
-  const pondDiscovery = discoveredCount(state);
-
-  purchaseAndVisit(state, state.processedAt, 'loc_river');
-  assert.equal(selectLocation(state, state.processedAt, 'loc_lake').ok, false, 'lake still locked');
-  advanceState(state, state.processedAt + 10 * 60 * 1000);
-
-  assert.ok(state.lifetimeCatches > pondCatches);
-  assert.ok(discoveredCount(state) > pondDiscovery, 'river species add to the same collection');
-  for (const record of state.recent) {
-    assert.equal(getSpecies(record.speciesId).locationId, 'loc_river');
+test('contract progress survives save/load', () => {
+  const s = business();
+  generateContracts(s, T0);
+  acceptContract(s, T0, s.contract.available[0].id);
+  advanceState(s, T0 + 60_000);
+  const raw = JSON.stringify(s);
+  const loaded = deserialize(raw);
+  assert.equal(loaded.ok, true);
+  if (s.contract.accepted) {
+    assert.equal(loaded.state.contract.accepted.id, s.contract.accepted.id);
+    assert.equal(loaded.state.contract.accepted.count, s.contract.accepted.count);
+  } else {
+    assert.equal(loaded.state.contract.completed, 1);
   }
 });

@@ -2,16 +2,19 @@
  * Development-only balance simulation (no test framework, no dependencies).
  *   npm run simulate
  *
- * Runs a simple greedy policy against several fixed seeds and reports:
- *  - coins per minute in each location with each rod
- *  - when a player could afford each upgrade / unlock
- *  - expected value per cast from the probability tables
+ * Compares idle-only play against intermittent active play with the v2 business:
+ * the greedy policy hires workers and expands the dock; the active policy also
+ * plays N player casts per simulated hour.
  */
 
 import {
   BAITS,
+  DOCK_LEVELS,
+  HIRE_COSTS,
   LOCATIONS,
+  PLAYER_CAST,
   RODS,
+  STALL_LEVELS,
   castDurationMs,
   coinsForCatch,
   getBait,
@@ -21,137 +24,216 @@ import {
   rarityDistribution,
   speciesByLocation,
 } from '../src/data.js';
-import { advanceState, createNewState, ownsItem, purchase, purchaseAndVisit } from '../src/engine.js';
+import {
+  abandonContract,
+  acceptContract,
+  advanceState,
+  assignWorker,
+  createNewState,
+  expandDock,
+  generateContracts,
+  hireWorker,
+  purchaseBait,
+  purchaseLocation,
+  settlePlayerCast,
+  startPlayerCast,
+  submitPlayerInput,
+  upgradeRod,
+  upgradeStall,
+  workerEstimate,
+} from '../src/engine.js';
 
-const HOUR = 3600 * 1000;
-const STEP = 5 * 1000; // five simulated seconds per policy tick
+const HOUR = 3_600_000;
+const STEP = 5_000;
+const START = 1_700_000_000_000;
 
-function policyStep(state, now, remaining) {
-  // Buy the cheapest affordable thing we still want, and move to the newest water.
-  const targets = ['rod_fiberglass', 'bait_minnows', 'rod_carbon', 'loc_river', 'bait_glow', 'rod_pro', 'loc_lake'];
-  const affordable = targets
-    .filter((id) => !ownsItem(state, id))
-    .map((id) => ({ id, cost: costOf(id) }))
-    .filter((t) => t.cost <= state.coins)
-    .sort((a, b) => a.cost - b.cost);
-  if (!affordable.length) return;
-  const target = affordable[0];
-  if (target.id.startsWith('loc_')) purchaseAndVisit(state, now, target.id);
-  else purchase(state, now, target.id);
-  if (remaining[target.id] === undefined) remaining[target.id] = now;
-}
-
-function costOf(id) {
-  const all = [...RODS, ...BAITS, ...LOCATIONS];
-  const item = all.find((i) => i.id === id);
-  return item ? item.cost : Infinity;
-}
-
-function runSeed(seed, hours) {
-  const start = 1_700_000_000_000;
-  const state = createNewState(start, seed);
-  state.fishing = true;
-  const firstBought = {};
-  const total = hours * HOUR;
-  let lastRatesAt = start;
-  let lastCoins = 0;
-
-  for (let t = STEP; t <= total; t += STEP) {
-    const now = start + t;
-    advanceState(state, now);
-    policyStep(state, now, firstBought);
-    lastRatesAt = now;
-    lastCoins = state.coins;
-  }
-  return { state, firstBought, lastCoins, lastRatesAt };
-}
-
-/** Expected coin value per cast for a location + rod + bait combination. */
-function expectedPerHour(locationId, rodId, baitId) {
-  const species = speciesByLocation(locationId);
-  const dist = rarityDistribution(species, getBait(baitId));
-  const byRarity = new Map(dist.map((d) => [d.rarity, d.probability]));
-  let expected = 0;
-  for (const s of species) {
-    const inRarity = species.filter((x) => x.rarity === s.rarity).length || 1;
-    const p = (byRarity.get(s.rarity) || 0) / inRarity;
-    // average of coinsForCatch over the size range
-    let sum = 0;
-    const steps = 200;
-    for (let i = 0; i <= steps; i += 1) {
-      sum += coinsForCatch(s, s.minWeight + (s.maxWeight - s.minWeight) * (i / steps));
-    }
-    expected += p * (sum / (steps + 1));
-  }
-  const duration = castDurationMs(getRod(rodId), getBait(baitId));
-  return { perCast: expected, perHour: (expected * HOUR) / duration, durationSec: duration / 1000 };
-}
-
-function fmt(ms) {
-  if (ms === undefined) return '—';
+const fmt = (ms) => {
   const totalSec = Math.round(ms / 1000);
   const m = Math.floor(totalSec / 60);
-  const s = totalSec % 60;
-  if (m < 60) return `${m}m${String(s).padStart(2, '0')}s`;
-  return `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}m`;
+  return m < 60 ? `${m}m${String(totalSec % 60).padStart(2, '0')}s` : `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}m`;
+};
+
+/** Shared business policy: prefer hiring (needs dock first), then dock, then stall, then rod/bait/location. */
+function businessStep(state, now, marks, wanted = []) {
+  const tryHire = () => {
+    const r = hireWorker(state, now);
+    if (r.ok) { if (!marks.hire2) marks.hire2 = now; return true; }
+    if (r.reason === 'dock_full') {
+      const d = expandDock(state, now);
+      if (d.ok) { if (!marks[`dock${state.dockLevel}`]) marks[`dock${state.dockLevel}`] = now; return true; }
+      return false;
+    }
+    return false;
+  };
+  if (wanted.includes('business') && tryHire()) return;
+
+  if (wanted.includes('rod') && !state.ownedRods.includes('rod_carbon')) {
+    if (upgradeRod(state, now, 'rod_carbon').ok) { if (!marks.rod) marks.rod = now; return; }
+  }
+  if (wanted.includes('bait') && !state.ownedBaits.includes('bait_minnows')) {
+    if (purchaseBait(state, now, 'bait_minnows').ok) { if (!marks.bait) marks.bait = now; return; }
+  }
+  if (wanted.includes('location') && !state.unlockedLocations.includes('loc_river')) {
+    if (purchaseLocation(state, now, 'loc_river').ok) { if (!marks.location) marks.location = now; return; }
+  }
+  if (wanted.includes('stall') && upgradeStall(state, now).ok) { if (!marks.stall) marks.stall = now; }
 }
 
-console.log('=== Expected value per hour (average-size fish, perfect uptime) ===');
+/** One player cast with a given skill (1 = perfect, 0 = never taps). Returns coins. */
+function playerCast(state, now, skill) {
+  if (!startPlayerCast(state, now).ok) return 0;
+  if (skill <= 0) return settlePlayerCast(state, now + 1000, true).coins;
+  for (let stage = 0; stage < PLAYER_CAST.stages; stage += 1) {
+    submitPlayerInput(state, now + 600 + stage * 700, skill);
+  }
+  return settlePlayerCast(state, now + 2800, false).coins;
+}
+
+/** Contract policy: always keep a contract accepted if one is affordable to complete. */
+function contractStep(state, now, marks) {
+  if (state.contract.accepted) return;
+  if (!state.contract.available.length) {
+    if (!generateContracts(state, now).ok) return;
+  }
+  // Accept the cheapest-to-complete looking offer (smallest qty).
+  const offers = [...state.contract.available].sort((a, b) => a.qty - b.qty);
+  if (offers.length && acceptContract(state, now, offers[0].id).ok) {
+    if (!marks.contract1) marks.contract1 = now;
+  }
+}
+
+function runPolicy({ seed, hours, castsPerHour, contracts }) {
+  const state = createNewState(START, seed);
+  state.fishing = true; void state.fishing;
+  const marks = {};
+  const wanted = castsPerHour > 0 ? ['business', 'rod', 'bait', 'location', 'stall'] : ['business', 'stall'];
+  const castInterval = castsPerHour > 0 ? Math.floor(HOUR / castsPerHour) : 0;
+  let castsPlayed = 0;
+
+  for (let t = STEP; t <= hours * HOUR; t += STEP) {
+    const now = START + t;
+    advanceState(state, now);
+    businessStep(state, now, marks, wanted);
+    if (contracts) contractStep(state, now, marks);
+    if (castInterval && t % castInterval < STEP) {
+      // Perfect play for the upper bound of active benefit.
+      playerCast(state, now, 1);
+      castsPlayed += 1;
+    }
+  }
+  return { state, marks, castsPlayed };
+}
+
+function report(label, { state, marks, castsPlayed }) {
+  const parts = Object.entries(marks)
+    .filter(([, v]) => typeof v === 'number')
+    .map(([k, v]) => `${k}=${fmt(v - START)}`)
+    .join('  ');
+  console.log(`${label} | ${parts}`);
+  console.log(`  coins ${Math.round(state.coins).toLocaleString()} · lifetime ${Math.round(state.lifetimeCoins).toLocaleString()} · ${state.lifetimeCatches} catches · workers ${state.workers.length} · dock ${state.dockLevel} · stall ${state.stallLevel}${castsPlayed ? ` · ${castsPlayed} player casts` : ''}`);
+}
+
+const SEEDS = [1, 7, 42, 1234, 90210];
+const HOURS = 3;
+
+console.log('=== Idle-only vs intermittent active play (3h, five seeds) ===');
+for (const seed of SEEDS) {
+  const idle = runPolicy({ seed, hours: HOURS, castsPerHour: 0, contracts: false });
+  report(`seed ${String(seed).padStart(5)} idle-only      `, idle);
+  const active = runPolicy({ seed, hours: HOURS, castsPerHour: 12, contracts: false });
+  report(`seed ${String(seed).padStart(5)} active 12/h    `, active);
+  const activeContracts = runPolicy({ seed, hours: HOURS, castsPerHour: 12, contracts: true });
+  report(`seed ${String(seed).padStart(5)} active+contract`, activeContracts);
+  console.log('');
+}
+
+console.log('=== Migration sanity: a rich v1 save keeps its coins and keeps earning ===');
+console.log('(see test/save.test.js for the covered cases)');
+
+console.log('\n=== Expected per-hour tables (Worms, average-size fish) ===');
 for (const loc of LOCATIONS) {
   for (const rod of RODS) {
-    const row = expectedPerHour(loc.id, rod.id, 'bait_worms');
+    const species = speciesByLocation(loc.id);
+    const dist = rarityDistribution(species, getBait('bait_worms'));
+    const byRarity = new Map(dist.map((d) => [d.rarity, d.probability]));
+    let expected = 0;
+    for (const s of species) {
+      const inRarity = species.filter((x) => x.rarity === s.rarity).length || 1;
+      expected += ((byRarity.get(s.rarity) || 0) / inRarity) * coinsForCatch(s, (s.minWeight + s.maxWeight) / 2);
+    }
+    const duration = castDurationMs(getRod(rod.id), getBait('bait_worms'));
     console.log(
-      `${loc.name.padEnd(16)} ${rod.name.padEnd(22)} ${row.durationSec.toFixed(0).padStart(2)}s/cast  ` +
-      `${Math.round(row.perCast).toString().padStart(5)} coins/cast  ${Math.round(row.perHour).toString().padStart(7)} coins/h`,
+      `${loc.name.padEnd(16)} ${rod.name.padEnd(22)} ${Math.round(duration / 1000).toString().padStart(2)}s/cast  ` +
+      `${Math.round((expected * HOUR) / duration).toString().padStart(7)} coins/h per worker`,
     );
   }
 }
 
-console.log('\n=== Greedy policy, fixed seeds (time to first afford each item) ===');
-const SEEDS = [1, 7, 42, 1234, 90210];
-const hoursArg = Number(process.argv[2] || 3);
-for (const seed of SEEDS) {
-  const { state, firstBought } = runSeed(seed, hoursArg);
-  const parts = ['rod_fiberglass', 'bait_minnows', 'rod_carbon', 'loc_river', 'bait_glow', 'rod_pro', 'loc_lake']
-    .map((id) => `${id.replace(/^(rod_|bait_|loc_)/, '')}=${fmt(firstBought[id] === undefined ? undefined : firstBought[id] - 1_700_000_000_000)}`)
-    .join('  ');
-  console.log(`seed ${String(seed).padStart(5)} | ${parts}`);
-  console.log(
-    `            | ${state.lifetimeCatches} catches, ${Math.round(state.lifetimeCoins).toLocaleString()} coins earned, ` +
-    `${Object.keys(state.collection).length}/15 species, in ${state.locationId}`,
-  );
+/* ------------------------------------------------------------------ *
+ * Prestige cycles (v3): how long is each run under different policies? *
+ * ------------------------------------------------------------------ */
+import { performPrestige, prestigeEligibility, earningsMultiplier as multOf, upgradeTraining } from '../src/engine.js';
+import { PRESTIGE as P } from '../src/data.js';
+import { prestigeThreshold as pThresholdFn } from '../src/engine.js';
+void P;
+
+function prestigeCycle(seed, { activeCastsPerHour, useContracts, checkInMin }) {
+  const s = createNewState(START, seed);
+  const step = checkInMin * 60_000;
+  const runs = [];
+  let casts = 0;
+  let t = step;
+  while (t <= 24 * HOUR && runs.length < 3) {
+    const now = START + t;
+    advanceState(s, now);
+
+    // Purchases: hire (needs dock first) > dock > stall > training > rod > bait > location.
+    for (let guard = 0; guard < 4; guard += 1) {
+      if (hireWorker(s, now).ok) continue;
+      if (expandDock(s, now).ok) continue;
+      if (upgradeStall(s, now).ok) continue;
+      if (upgradeTraining(s, now).ok) continue;
+      if (!s.ownedRods.includes('rod_carbon') && upgradeRod(s, now, 'rod_carbon').ok) continue;
+      if (!s.ownedBaits.includes('bait_minnows') && purchaseBait(s, now, 'bait_minnows').ok) continue;
+      if (!s.unlockedLocations.includes('loc_river') && purchaseLocation(s, now, 'loc_river').ok) continue;
+      break;
+    }
+
+    if (useContracts && !s.contract.accepted) {
+      if (!s.contract.available.length) generateContracts(s, now);
+      const offers = [...s.contract.available].sort((a, b) => a.qty - b.qty);
+      if (offers.length) acceptContract(s, now, offers[0].id);
+    }
+
+    if (activeCastsPerHour > 0 && t % Math.max(step, Math.floor(HOUR / activeCastsPerHour)) < step) {
+      if (startPlayerCast(s, now).ok) {
+        for (let stage = 0; stage < 3; stage += 1) submitPlayerInput(s, now + 600 + stage * 700, 0.8);
+        settlePlayerCast(s, now + 2800, false);
+        casts += 1;
+      }
+    }
+
+    const el = prestigeEligibility(s);
+    if (el.eligible) {
+      const r = performPrestige(s, now);
+      if (r.ok) runs.push({ minutes: Math.round(t / 60_000), mult: multOf(s), dest: r.destination.locationId });
+    }
+    t += step;
+  }
+  return { runs, casts };
 }
 
-console.log('\n=== Bait tradeoffs, measured by running the engine (3h, Bamboo Pole, Stillwater Pond) ===');
-for (const bait of BAITS) {
-  const state = createNewState(1_700_000_000_000, 31337);
-  state.fishing = true;
-  state.ownedBaits = BAITS.map((b) => b.id);
-  state.baitId = bait.id;
-  const hours = 3;
-  const summary = advanceState(state, 1_700_000_000_000 + hours * HOUR);
-  const ratios = summary.catches.map((r) => {
-    const s = getSpecies(r.speciesId);
-    return (r.weight - s.minWeight) / (s.maxWeight - s.minWeight);
-  });
-  const meanRatio = ratios.reduce((a, b) => a + b, 0) / ratios.length;
-  const trophies = summary.catches.filter((r) => isTrophy(getSpecies(r.speciesId), r.weight)).length;
-  console.log(
-    `${bait.name.padEnd(10)} ${(castDurationMs(getRod('rod_bamboo'), bait) / 1000).toFixed(0)}s/cast  ` +
-    `${summary.catches.length} casts  ${Math.round(summary.coins / hours).toString().padStart(6)} coins/h  ` +
-    `avg size ${(meanRatio * 100).toFixed(0)}% of range  ${trophies} trophies ` +
-    `(${((trophies / summary.catches.length) * 100).toFixed(2)}% of casts)`,
-  );
-}
-
-console.log('\n=== Species probability tables (Worms vs Glow Lure) ===');
-for (const loc of LOCATIONS) {
-  const species = speciesByLocation(loc.id);
-  for (const baitId of ['bait_worms', 'bait_glow']) {
-    const dist = rarityDistribution(species, getBait(baitId));
-    console.log(
-      `${loc.name.padEnd(16)} ${getBait(baitId).name.padEnd(10)} ` +
-      dist.map((d) => `${d.rarity[0].toUpperCase()} ${(d.probability * 100).toFixed(1)}%`).join('  '),
-    );
+console.log('\n=== Prestige cycles (24h horizon, three runs per policy) ===');
+const POLICIES = [
+  { label: 'idle-only, 5-min check-ins, no contracts, no hand casts', activeCastsPerHour: 0, useContracts: false, checkInMin: 5 },
+  { label: 'idle + contracts, 5-min check-ins', activeCastsPerHour: 0, useContracts: true, checkInMin: 5 },
+  { label: 'active 12 casts/h + contracts, 5-min check-ins', activeCastsPerHour: 12, useContracts: true, checkInMin: 5 },
+];
+for (const policy of POLICIES) {
+  for (const seed of [1, 42, 90210]) {
+    const { runs, casts } = prestigeCycle(seed, policy);
+    const text = runs.map((r) => `run${runs.indexOf(r) + 1}@${r.minutes}min(${r.mult.toFixed(2)}x,${r.dest.replace('loc_', '')})`).join(' ');
+    console.log(`${policy.label} | seed ${seed} | ${text || 'no prestige in 24h'}${casts ? ` | ${casts} hand casts` : ''}`);
   }
 }
+console.log(`Threshold: ${pThresholdFn(createNewState(START, 1)).toLocaleString()} base, +${P.thresholdGrowth.toLocaleString()} per prestige; needs ${P.minWorkers} workers.`);
