@@ -5,7 +5,9 @@ and JavaScript with ES modules — no dependencies, no build step, no backend, n
 live in `localStorage`; the business keeps earning for up to 8 hours while you are away, and you
 can pick up a rod yourself whenever you feel like a 3–5 minute session.
 
-![Gone Fishing at Willow River](docs/preview.png)
+**[Play in your browser](https://gone-fishing1.netlify.app/)**
+
+![Gone Fishing: the current worker dock at Stillwater Pond](docs/preview.png)
 
 ```
 Hire workers → they fish their assigned waters automatically → fish yourself when you want to
@@ -34,15 +36,19 @@ Pure game-logic tests on Node's built-in test runner (Node 24; no test framework
 npm test                           # same as: node --test test/*.test.js
 ```
 
+Verified on 2026-09-22: **54 tests passed** on Node.js 26.8.1. Current content includes
+6 waters, 30 species, 8 rods, 5 baits, up to 6 workers and optional prestige.
+There is no build step.
+
 ## Look at the balance numbers (development only)
 
 ```bash
 npm run simulate
 ```
 
-Runs a greedy purchase policy against fixed seeds and prints coins per hour, expected value
-per cast, the time to afford each upgrade, and a comparison of the three baits measured by
-actually running the engine.
+Runs a greedy purchase policy against fixed seeds and compares idle/active income,
+purchase timing and bait tradeoffs by running the engine. These are scripted balance
+measurements, not a human playtime guarantee.
 
 ## Project layout
 
@@ -72,7 +78,7 @@ tools/simulate.mjs  fixed-seed balance simulation, idle vs active policies, pres
 (free). Every worker runs their own cast loop at their own assigned location and bait —
 different workers can fish different waters at the same time. Investments compete for the same
 coins: hire workers (worker 2 is free, 3–6 cost more), expand the dock (2→6 berths across four
-expansions), upgrade the fish stall (three levels, up to ×1.3 on every sale), and buy rod
+expansions), upgrade the fish stall (five levels including the starter, up to ×1.45 on every sale), and buy rod
 upgrades that are **shared across the whole operation** — one purchase speeds up every worker
 *and* your own hand-fishing. Each worker shows an income estimate (labeled as an estimate;
 luck moves it).
@@ -119,7 +125,7 @@ benefits from each purchase, and which items need a prestige tier.
   Cedar Hollow (prestige 1) → Frostwater Basin (2) → Starlight Mere (3). Five species per
   location, always in the order Common, Uncommon, Rare, Epic, Legendary (58% / 28% / 10% /
   3.5% / 0.5% base odds).
-- **Eight rods, five baits, three training levels, three reel-control levels.** New tiers
+- **Eight rods, five baits, four training levels, four reel-control levels.** New tiers
   (Ashgrove, Frostwind, Tideglass, Merelight rods; Cedar Berries and Moonmote baits) unlock by
   prestige count but are bought with in-run coins. Crew training shortens worker casts; reel
   control widens the manual timing target. Cast time is floored at 5 seconds.
@@ -185,5 +191,10 @@ wide and uses the space well on desktop without stretching.
 ## Deliberately not included
 
 No multiplayer, leaderboards, accounts, premium shop, real-money economy, daily rewards,
-streaks, quests, weather, prestige, skill trees, aquariums, service worker/PWA, analytics,
-deployment or any runtime AI call.
+streaks, quests, weather, skill trees, aquariums, service worker/PWA, analytics,
+any runtime AI call.
+
+## Status and license
+
+A complete, playable single-player browser game. Saves are local to a browser;
+export a backup before changing devices. No license file has been selected.

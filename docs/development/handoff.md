@@ -1,3 +1,5 @@
+> Historical implementation notes. See the [current README](../../README.md) for gameplay, content counts and the live game.
+
 # HANDOFF — Gone Fishing (prestige + new ponds update)
 
 Branch `gameplay/tycoon-active-fishing` (commit `9c4d82c` was the tycoon baseline; this update
