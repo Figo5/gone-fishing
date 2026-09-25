@@ -6,6 +6,8 @@ new ponds. The game is plain HTML, CSS and JavaScript; progress stays in browser
 
 ![Gone Fishing dock](docs/preview.png)
 
+Playtest captures: [375px dock](docs/qa-mobile.jpg) and [collection view](docs/qa-desktop.jpg).
+
 ## Run and verify
 
 ```bash
