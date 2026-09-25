@@ -146,7 +146,7 @@ test('v1 saves migrate: economy preserved, fisher becomes worker 1, no invented 
   assert.equal(result.fromVersion, 1);
 
   const s = result.state;
-  assert.equal(s.schemaVersion, SCHEMA_VERSION_V3);
+  assert.equal(s.schemaVersion, CURRENT_SCHEMA_VERSION);
   assert.equal(s.prestige.count, 0, 'v1 migration never forces prestige');
   assert.equal(s.prestige.runEarnings, 9876, 'run earnings seeded from lifetime coins');
   assert.equal(s.trainingLevel, 0);

@@ -137,6 +137,7 @@ h3 { font-size: 0.95rem; }
 
 .scene-wrap { display: grid; gap: 6px; }
 .scene {
+  position: relative;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   overflow: hidden;
@@ -144,6 +145,19 @@ h3 { font-size: 0.95rem; }
   background: #0a1a1c;
 }
 .scene svg { display: block; width: 100%; height: auto; }
+.scene.weather-rain::after, .scene.weather-fog::after, .scene.weather-wind::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.scene.weather-rain::after {
+  background: repeating-linear-gradient(108deg, transparent 0 20px, rgba(176,222,225,.21) 21px, transparent 22px);
+  animation: weather-rain .9s linear infinite;
+}
+.scene.weather-fog::after { background: linear-gradient(to top, rgba(191,213,207,.23), transparent 78%); }
+.scene.weather-wind::after { background: repeating-linear-gradient(0deg, transparent 0 38px, rgba(207,231,222,.07) 40px, transparent 42px); }
+@keyframes weather-rain { to { background-position: -24px 30px; } }
 .scene-caption { margin: 0 2px; }
 
 /* bobber + ripple motion (disabled under reduced motion) */
@@ -223,9 +237,11 @@ h3 { font-size: 0.95rem; }
 .recent-block { margin-top: 16px; }
 .block-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
 
-.recent { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.recent { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; }
 .recent li {
   display: flex;
+  flex-wrap: wrap;
+  min-width: 0;
   align-items: center;
   gap: 10px;
   padding: 7px 11px;
@@ -470,3 +486,21 @@ h3 { font-size: 0.95rem; }
   *, *::before, *::after { animation: none !important; transition: none !important; }
   .cast-fill { transition: none; }
 }
+.event-options, .legacy-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: .7rem;
+}
+
+.event-options .btn {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  text-align: left;
+  gap: .3rem;
+  min-height: 5.5rem;
+  white-space: normal;
+}
+
+.event-options small { font-size: .8rem; font-weight: 400; line-height: 1.35; }
+.conditions-strip p { line-height: 1.5; }

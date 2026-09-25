@@ -273,7 +273,7 @@ test('contract offers only use unlocked content and achievable rarities', () => 
       assert.ok(offer.reward > 0);
     }
   }
-  assert.equal(CONTRACT_TEMPLATES.length, 3);
+  assert.equal(CONTRACT_TEMPLATES.length, 6);
 });
 
 test('assignments change what workers catch (location and bait matter)', () => {

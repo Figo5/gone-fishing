@@ -17,9 +17,13 @@ import {
   BASE_RARITY_WEIGHTS,
   CONTRACT_REWARD_MULT,
   CONTRACT_TEMPLATES,
+  CONTRACT_OFFICE_LEVELS,
   DOCK_LEVELS,
+  EVENT_CHOICES,
   HIRE_COSTS,
   LOCATIONS,
+  LOCATION_CAST_MULT,
+  LEGACY_PERKS,
   OFFLINE_CAP_MS,
   MIN_CAST_MS,
   PLAYER_CAST,
@@ -30,6 +34,7 @@ import {
   STALL_LEVELS,
   TRAINING_LEVELS,
   castDurationMs,
+  conditionAt,
   coinsForCatch,
   getBait,
   getLocation,
@@ -39,10 +44,11 @@ import {
   rollWeight,
   speciesByLocation,
   trophyThreshold,
+  workerRole,
 } from './data.js';
 import { createRngState, rngStep } from './rng.js';
 
-export const EMPTY_COLLECTION_ENTRY = { catches: 0, bestWeight: 0, trophies: 0 };
+export const EMPTY_COLLECTION_ENTRY = { catches: 0, bestWeight: 0, bestValue: 0, trophies: 0 };
 
 export function createWorker(id) {
   return {
@@ -59,7 +65,7 @@ export function createWorker(id) {
 /** v2 state. (v1's single `fishing` flag is superseded; migration handles old saves.) */
 export function createNewState(now, seed) {
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     coins: 0,
     ownedRods: ['rod_bamboo'],
     ownedBaits: ['bait_worms'],
@@ -69,6 +75,7 @@ export function createNewState(now, seed) {
     stallLevel: 0,
     trainingLevel: 0,
     reelControlLevel: 0,
+    officeLevel: 0,
     rodId: 'rod_bamboo',
     workers: [createWorker(1)],
     player: {
@@ -94,6 +101,8 @@ export function createNewState(now, seed) {
       lastPrestigeAt: 0, // timestamp of the last prestige (0 = never)
       homePondId: 'loc_pond',
     },
+    legacy: { points: 0, perks: [] },
+    event: { activeId: null, startedAt: 0, endsAt: 0, nextAt: Math.floor(now) + 25 * 60_000, completed: 0 },
     paused: false,
     castCount: 0,
     lifetimeCatches: 0,
@@ -133,10 +142,28 @@ export function currentCastDurationMs(state) {
 
 /** Worker cast time includes their bait's speed penalty plus crew training. */
 export function workerCastDurationMs(state, worker) {
-  const base = castDurationMs(getRod(state.rodId), getBait(worker.baitId));
+  const rod = getRod(state.rodId);
+  const role = workerRole(worker.id);
+  const rodSpeed = rod.favoredLocations?.includes(worker.locationId) ? rod.locationSpeed : 1;
+  const roleSpeed = (!role.locations || role.locations.includes(worker.locationId)) ? (role.speed || 1) : 1;
+  const base = Math.round(castDurationMs(rod, getBait(worker.baitId)) *
+    (LOCATION_CAST_MULT[worker.locationId] || 1) * rodSpeed * roleSpeed * (state.legacy?.perks?.includes('crewBond') ? 0.95 : 1));
   const training = TRAINING_LEVELS[state.trainingLevel];
   const trained = training ? Math.round(base * training.mult) : base;
   return Math.max(MIN_CAST_MS, trained);
+}
+
+/** Permanent collection goals: every discovery improves local sale value;
+ * a trophy of every local species improves size at that water. */
+export function locationMastery(state, locationId) {
+  const pool = speciesByLocation(locationId);
+  return {
+    caught: pool.filter((s) => (state.collection[s.id]?.catches || 0) > 0).length,
+    trophies: pool.filter((s) => (state.collection[s.id]?.trophies || 0) > 0).length,
+    total: pool.length,
+    discovered: pool.every((s) => (state.collection[s.id]?.catches || 0) > 0),
+    trophy: pool.every((s) => (state.collection[s.id]?.trophies || 0) > 0),
+  };
 }
 
 export function dockCapacity(state) {
@@ -182,8 +209,14 @@ export function reelControlName(state) {
 }
 
 /** Sale value of a fish: stall cut, then the permanent prestige multiplier, once. */
-export function stallValue(state, coins) {
-  return Math.max(1, Math.round(coins * stallMultiplier(state) * earningsMultiplier(state)));
+export function eventActive(state, id, stampAt = state.processedAt) {
+  const e = state.event;
+  return Boolean(e && e.activeId === id && stampAt >= e.startedAt && stampAt < e.endsAt);
+}
+
+export function stallValue(state, coins, stampAt = state.processedAt) {
+  const market = eventActive(state, 'market', stampAt) ? 1.25 : 1;
+  return Math.max(1, Math.round(coins * stallMultiplier(state) * earningsMultiplier(state) * market));
 }
 
 /** Track gross run earnings for prestige eligibility; spending never reduces it. */
@@ -208,6 +241,7 @@ export function recordCatch(state, species, weight, coins, source, stampAt) {
   state.collection[species.id] = {
     catches: entry.catches + 1,
     bestWeight: isRecord ? weight : entry.bestWeight,
+    bestValue: Math.max(entry.bestValue || 0, coins),
     trophies: entry.trophies + (trophy ? 1 : 0),
   };
   state.coins += coins;
@@ -237,6 +271,7 @@ export function recordCatch(state, species, weight, coins, source, stampAt) {
     trophy,
     isNewSpecies,
     isRecord: isRecord && !isNewSpecies,
+    at: stampAt,
   };
   applyContractProgress(state, result);
   return result;
@@ -247,11 +282,36 @@ export function recordCatch(state, species, weight, coins, source, stampAt) {
  * ------------------------------------------------------------------ */
 
 /** Bait-modified, normalized species roll for a location. */
-function rollSpeciesFrom(locationId, baitId, uniform) {
+function speciesWeight(state, species, baitId, source, stampAt, worker = null) {
   const bait = getBait(baitId);
-  const mult = (bait && bait.rarity) || null;
+  const rod = getRod(state.rodId);
+  const role = worker ? workerRole(worker.id) : null;
+  const rarity = species.rarity;
+  const rare = RARITY_ORDER.indexOf(rarity) >= 2;
+  let weight = BASE_RARITY_WEIGHTS[rarity] * (bait?.rarity?.[rarity] ?? 1);
+  if (species.preferredBaitId === baitId) weight *= 2.4;
+  if (species.preferredCondition === conditionAt(species.locationId, stampAt).id) weight *= state.legacy?.perks?.includes('weatherSense') ? 1.9 : 1.65;
+  if (rare) {
+    weight *= rod.rareMult || 1;
+    if (state.legacy?.perks?.includes('anglerLuck')) weight *= 1.15;
+    if (eventActive(state, 'migration', stampAt)) weight *= 1.8;
+    if (role && (!role.locations || role.locations.includes(species.locationId))) weight *= role.rareMult || 1;
+  }
+  // Skilled reel work has a modest discovery edge on top of its size and sale reward.
+  if (rare && source === 'player') weight *= 1.18;
+  return weight;
+}
+
+export function catchOdds(state, locationId, baitId, source = 'worker', stampAt = state.processedAt, worker = null) {
   const pool = speciesByLocation(locationId);
-  const weights = pool.map((s) => (BASE_RARITY_WEIGHTS[s.rarity] || 0) * (mult ? (mult[s.rarity] || 0) : 1));
+  const raw = pool.map((species) => speciesWeight(state, species, baitId, source, stampAt, worker));
+  const total = raw.reduce((a, b) => a + b, 0) || 1;
+  return pool.map((species, i) => ({ species, probability: raw[i] / total }));
+}
+
+function rollSpeciesFrom(state, locationId, baitId, uniform, source, stampAt, worker = null) {
+  const pool = speciesByLocation(locationId);
+  const weights = pool.map((s) => speciesWeight(state, s, baitId, source, stampAt, worker));
   let total = weights.reduce((a, b) => a + b, 0);
   if (!(total > 0)) total = 1;
   const u = uniform * total;
@@ -273,11 +333,14 @@ function resolveWorkerCatch(state, worker, stampAt) {
   const s2 = rngStep(s1.state);
   worker.rngState = s2.state;
 
-  const species = rollSpeciesFrom(worker.locationId, worker.baitId, s1.value);
+  const species = rollSpeciesFrom(state, worker.locationId, worker.baitId, s1.value, 'worker', stampAt, worker);
   const bait = getBait(worker.baitId);
-  const weight = rollWeight(species, s2.value, bait ? bait.sizeBias : 1);
+  const role = workerRole(worker.id);
+  const mastery = locationMastery(state, worker.locationId);
+  const bias = (bait?.sizeBias || 1) * (getRod(state.rodId)?.sizeBias || 1) * (role.sizeBias || 1) * (mastery.trophy ? 1.12 : 1) * (state.legacy?.perks?.includes('recordKeeper') ? 1.12 : 1) * (eventActive(state, 'trophy', stampAt) ? 1.4 : 1);
+  const weight = rollWeight(species, s2.value, bias);
   const rounded = Math.max(species.minWeight, Math.round(weight * 100) / 100);
-  const coins = stallValue(state, coinsForCatch(species, rounded));
+  const coins = stallValue(state, Math.round(coinsForCatch(species, rounded) * (mastery.discovered ? 1.08 : 1)), stampAt);
 
   worker.catches += 1;
   addRunEarnings(state, coins);
@@ -318,31 +381,32 @@ export function advanceState(state, now, options = {}) {
 
   if (credited > 0 && !state.paused) {
     state.playTimeMs += credited;
-
-    for (const worker of state.workers) {
+    // Resolve every worker in timestamp order. Collection mastery and automatic
+    // contract choices can change rewards; worker-by-worker batches would give
+    // different outcomes from the same elapsed time processed live.
+    const loops = state.workers.map((worker) => {
       const duration = workerDuration(state, worker);
-      const startProgress = worker.progressMs;
-      let budget = startProgress + credited;
-      let guard = 0;
-      const maxCatches = Math.min(100000, Math.ceil(budget / Math.max(1, duration)) + 2);
-      let k = 0;
-      while (budget >= duration && guard < maxCatches) {
-        budget -= duration;
-        // Time from the batch start to this catch — keeps the feed stable
-        // across batch sizes without influencing any reward.
-        const offset = Math.min(credited, Math.max(0, duration - startProgress + k * duration));
-        result.catches.push(resolveWorkerCatch(state, worker, state.processedAt + offset));
-        k += 1;
-        guard += 1;
-      }
-      worker.progressMs = Math.max(0, budget);
+      return { worker, duration, next: Math.max(0, duration - worker.progressMs), start: worker.progressMs };
+    });
+    for (let guard = 0; guard < 100000; guard += 1) {
+      let soonest = null;
+      for (const loop of loops) if (loop.next <= credited && (!soonest || loop.next < soonest.next)) soonest = loop;
+      if (!soonest) break;
+      result.catches.push(resolveWorkerCatch(state, soonest.worker, state.processedAt + soonest.next));
+      soonest.next += soonest.duration;
     }
+    for (const loop of loops) loop.worker.progressMs = (loop.start + credited) % loop.duration;
+  }
+
+  if (state.event?.activeId && target >= state.event.endsAt) {
+    state.event.activeId = null;
+    state.event.completed += 1;
   }
 
   // Watermark always advances (capped) so over-cap time is discarded exactly once.
   if (target > state.processedAt) state.processedAt = target;
   state.lastSeenAt = target;
-  result.coins = result.catches.reduce((a, r) => a + r.coins, 0);
+  result.coins = result.catches.reduce((a, r) => a + r.coins + (r.contractComplete?.reward || 0), 0);
   for (const r of result.catches) {
     if (r.contractComplete) result.contractCompletions.push(r.contractComplete);
   }
@@ -412,12 +476,24 @@ export function upgradeRod(state, now, rodId) {
   const rod = getRod(rodId);
   if (!rod) return { ok: false, reason: 'unknown_item' };
   if (state.ownedRods.includes(rodId)) return { ok: false, reason: 'already_owned' };
+  if ((rod.prestige || 0) > (state.prestige?.count || 0)) return { ok: false, reason: 'prestige_locked' };
   const check = funds(state, rod.cost);
   if (!check.ok) return { ...check, cost: rod.cost };
   const settle = advanceState(state, now);
   state.ownedRods.push(rodId);
   state.rodId = rodId;
+  state.coins -= rod.cost;
   return { ok: true, cost: rod.cost, rod, settle };
+}
+
+/** Owned rods remain useful as location, rarity or trophy specialists. */
+export function equipRod(state, now, rodId) {
+  if (!state.ownedRods.includes(rodId)) return { ok: false, reason: 'not_owned' };
+  if (state.rodId === rodId) return { ok: true, changed: false };
+  const settle = advanceState(state, now);
+  state.rodId = rodId;
+  for (const worker of state.workers) worker.progressMs = 0;
+  return { ok: true, changed: true, settle };
 }
 
 /** Unlock a new bait (usable by the player and assignable to workers). */
@@ -425,6 +501,7 @@ export function purchaseBait(state, now, baitId) {
   const bait = getBait(baitId);
   if (!bait) return { ok: false, reason: 'unknown_item' };
   if (state.ownedBaits.includes(baitId)) return { ok: false, reason: 'already_owned' };
+  if (!baitAvailable(state, baitId)) return { ok: false, reason: 'prestige_locked' };
   const check = funds(state, bait.cost);
   if (!check.ok) return { ...check, cost: bait.cost };
   const settle = advanceState(state, now);
@@ -438,10 +515,12 @@ export function purchaseLocation(state, now, locationId) {
   const location = getLocation(locationId);
   if (!location) return { ok: false, reason: 'unknown_item' };
   if (state.unlockedLocations.includes(locationId)) return { ok: false, reason: 'already_owned' };
+  if ((location.prestige || 0) > (state.prestige?.count || 0)) return { ok: false, reason: 'prestige_locked' };
   const check = funds(state, location.cost);
   if (!check.ok) return { ...check, cost: location.cost };
   const settle = advanceState(state, now);
   state.unlockedLocations.push(locationId);
+  state.coins -= location.cost;
   return { ok: true, cost: location.cost, settle };
 }
 
@@ -475,6 +554,39 @@ export function upgradeReelControl(state, now) {
   state.reelControlLevel += 1;
   state.coins -= next.cost;
   return { ok: true, cost: next.cost, level: next, settle };
+}
+
+export function upgradeContractOffice(state, now) {
+  const next = CONTRACT_OFFICE_LEVELS[state.officeLevel + 1];
+  if (!next) return { ok: false, reason: 'maxed' };
+  const check = funds(state, next.cost);
+  if (!check.ok) return { ...check, cost: next.cost };
+  const settle = advanceState(state, now);
+  state.coins -= next.cost;
+  state.officeLevel += 1;
+  if (!state.contract.accepted && !state.contract.available.length) refillBoard(state, now);
+  if (state.officeLevel >= 2 && !state.contract.accepted) autoAcceptContract(state);
+  return { ok: true, level: next, settle };
+}
+
+export function chooseEvent(state, now, id) {
+  if (!EVENT_CHOICES.some((choice) => choice.id === id)) return { ok: false, reason: 'unknown_event' };
+  const settle = advanceState(state, now);
+  if (state.event.activeId || now < state.event.nextAt) return { ok: false, reason: 'not_ready', settle };
+  state.event.activeId = id;
+  state.event.startedAt = Math.floor(now);
+  state.event.endsAt = Math.floor(now) + 20 * 60_000;
+  state.event.nextAt = state.event.endsAt + 40 * 60_000;
+  return { ok: true, event: state.event, settle };
+}
+
+export function buyLegacyPerk(state, id) {
+  if (!LEGACY_PERKS.some((perk) => perk.id === id)) return { ok: false, reason: 'unknown_perk' };
+  if (state.legacy.perks.includes(id)) return { ok: false, reason: 'owned' };
+  if (state.legacy.points < 1) return { ok: false, reason: 'no_points' };
+  state.legacy.points -= 1;
+  state.legacy.perks.push(id);
+  return { ok: true };
 }
 
 /** Purchase a bait unlock; availability gated by prestige tier (access is permanent). */
@@ -514,6 +626,7 @@ export function assignWorker(state, now, workerId, patch = {}) {
     worker.progressMs = 0;
     changed = true;
   }
+  if (changed && state.officeLevel >= 2 && !state.contract.accepted) autoAcceptContract(state);
   return { ok: true, changed };
 }
 
@@ -523,18 +636,13 @@ export function assignWorker(state, now, workerId, patch = {}) {
  */
 export function workerEstimate(state, worker) {
   const duration = workerDuration(state, worker);
-  const bait = getBait(worker.baitId);
-  const mult = (bait && bait.rarity) || null;
-  const pool = speciesByLocation(worker.locationId);
-  const weights = pool.map((s) => (BASE_RARITY_WEIGHTS[s.rarity] || 0) * (mult ? (mult[s.rarity] || 0) : 1));
-  const total = weights.reduce((a, b) => a + b, 0) || 1;
+  const odds = catchOdds(state, worker.locationId, worker.baitId, 'worker', state.processedAt, worker);
   let expected = 0;
-  for (let i = 0; i < pool.length; i += 1) {
-    const species = pool[i];
+  for (const { species, probability } of odds) {
     const mid = (species.minWeight + species.maxWeight) / 2;
-    expected += (weights[i] / total) * coinsForCatch(species, mid);
+    expected += probability * coinsForCatch(species, mid);
   }
-  const perCast = stallValue(state, expected);
+  const perCast = stallValue(state, expected * (locationMastery(state, worker.locationId).discovered ? 1.08 : 1));
   return {
     perCatch: perCast,
     perHour: Math.round(perCast * (3_600_000 / duration)),
@@ -550,13 +658,15 @@ export function workerEstimate(state, worker) {
  * size), so starting or canceling minigames can never disturb worker catches.
  */
 export function startPlayerCast(state, now) {
+  if (state.paused) return { ok: false, reason: 'paused' };
   if (state.player.active) return { ok: false, reason: 'already_casting' };
   const s1 = rngStep(state.player.rngState);
   const s2 = rngStep(s1.state);
   state.player.rngState = s2.state;
-  const species = rollSpeciesFrom(state.player.locationId, state.player.baitId, s1.value);
+  const species = rollSpeciesFrom(state, state.player.locationId, state.player.baitId, s1.value, 'player', now);
   const bait = getBait(state.player.baitId);
-  const sizeRoll = rollWeight(species, s2.value, bait ? bait.sizeBias : 1);
+  const mastery = locationMastery(state, state.player.locationId);
+  const sizeRoll = rollWeight(species, s2.value, (bait?.sizeBias || 1) * (getRod(state.rodId)?.sizeBias || 1) * (mastery.trophy ? 1.12 : 1) * (state.legacy?.perks?.includes('recordKeeper') ? 1.12 : 1) * (eventActive(state, 'trophy', now) ? 1.4 : 1));
   state.player.active = {
     speciesId: species.id,
     sizeRoll,
@@ -607,13 +717,13 @@ export function settlePlayerCast(state, now, auto = false) {
 
   const species = getSpecies(game.speciesId);
   const bait = getBait(state.player.baitId);
-  const base = rollWeight(species, game.sizeRoll, bait ? bait.sizeBias : 1);
-  const weight = Math.max(species.minWeight, Math.round(base * PLAYER_CAST.sizeBonus(q) * 100) / 100);
+  const base = game.sizeRoll;
+  const weight = Math.min(species.maxWeight, Math.max(species.minWeight, Math.round(base * PLAYER_CAST.sizeBonus(q) * 100) / 100));
   // Cap the player catch at a few worker-average catches *at the water being fished*,
   // so hands-on play stays meaningful on every pond without overshadowing the crew.
-  const workerAverage = expectedWorkerPerCast(state, state.player.locationId, 'bait_worms');
+  const workerAverage = expectedWorkerPerCast(state, state.player.locationId, 'bait_worms', now);
   const cap = Math.max(1, Math.round(workerAverage * PLAYER_CAST.valueCapWorkerCasts));
-  const coins = Math.min(cap, stallValue(state, Math.round(coinsForCatch(species, weight) * PLAYER_CAST.valueBonus(q))));
+  const coins = Math.min(cap, stallValue(state, Math.round(coinsForCatch(species, weight) * PLAYER_CAST.valueBonus(q) * (locationMastery(state, state.player.locationId).discovered ? 1.08 : 1)), now));
 
   state.player.active = null;
   state.player.casts += 1;
@@ -638,27 +748,22 @@ export function cancelPlayerCast(state) {
  * ------------------------------------------------------------------ */
 
 /** Estimated stall value of an average catch at a location under a given bait. */
-function expectedWorkerPerCast(state, locationId, baitId) {
-  const pool = speciesByLocation(locationId);
-  const bait = getBait(baitId);
-  const mult = (bait && bait.rarity) || null;
-  const weights = pool.map((s) => (BASE_RARITY_WEIGHTS[s.rarity] || 0) * (mult ? (mult[s.rarity] || 0) : 1));
-  const total = weights.reduce((a, b) => a + b, 0) || 1;
+function expectedWorkerPerCast(state, locationId, baitId, stampAt = state.processedAt) {
+  const odds = catchOdds(state, locationId, baitId, 'worker', stampAt);
   let expected = 0;
-  for (let i = 0; i < pool.length; i += 1) {
-    const species = pool[i];
+  for (const { species, probability } of odds) {
     const mid = (species.minWeight + species.maxWeight) / 2;
-    expected += (weights[i] / total) * coinsForCatch(species, mid);
+    expected += probability * coinsForCatch(species, mid);
   }
-  return stallValue(state, expected);
+  return stallValue(state, expected, stampAt);
 }
 
 /** Estimated stall value of an average catch at a location (Worms distribution). */
-function expectedPerCatch(state, locationId) {
-  return expectedWorkerPerCast(state, locationId, 'bait_worms');
+function expectedPerCatch(state, locationId, stampAt = state.processedAt) {
+  return expectedWorkerPerCast(state, locationId, 'bait_worms', stampAt);
 }
 
-function makeOffer(state) {
+function makeOffer(state, forcedTemplate = null, stampAt = state.processedAt) {
   const stream = state.contract;
   const draw = () => {
     const s = rngStep(stream.rngState);
@@ -669,7 +774,7 @@ function makeOffer(state) {
   const locRoll = draw();
   const paramRoll = draw();
 
-  const template = CONTRACT_TEMPLATES[Math.floor(kindRoll * CONTRACT_TEMPLATES.length) % CONTRACT_TEMPLATES.length];
+  const template = forcedTemplate || CONTRACT_TEMPLATES[Math.floor(kindRoll * CONTRACT_TEMPLATES.length) % CONTRACT_TEMPLATES.length];
   const locations = state.unlockedLocations;
   const locationId = locations[Math.floor(locRoll * locations.length) % locations.length];
   const pool = speciesByLocation(locationId);
@@ -683,7 +788,7 @@ function makeOffer(state) {
       kind: 'qty',
       locationId,
       qty,
-      reward: Math.max(60, Math.round(expectedPerCatch(state, locationId) * qty * 2)),
+      reward: Math.max(60, Math.round(expectedPerCatch(state, locationId, stampAt) * qty * 2)),
     };
   }
   if (template.kind === 'size') {
@@ -697,8 +802,25 @@ function makeOffer(state) {
       speciesId: target.id,
       threshold,
       qty: 3,
-      reward: Math.max(80, Math.round(expectedPerCatch(state, locationId) * 3 * 2.4)),
+      reward: Math.max(80, Math.round(expectedPerCatch(state, locationId, stampAt) * 3 * 2.4)),
     };
+  }
+  if (template.kind === 'species') {
+    const target = easy[Math.floor(paramRoll * easy.length) % easy.length] || pool[0];
+    const qty = 3 + Math.floor(paramRoll * 4);
+    return { id: `species-${target.id}-${qty}`, templateId: template.id, kind: 'species',
+      speciesId: target.id, locationId, qty,
+      reward: Math.max(90, Math.round(expectedPerCatch(state, locationId, stampAt) * qty * 2.8)) };
+  }
+  if (template.kind === 'trophy') {
+    return { id: `trophy-${locationId}`, templateId: template.id, kind: 'trophy',
+      locationId, qty: 1, reward: Math.max(180, Math.round(expectedPerCatch(state, locationId, stampAt) * 13)) };
+  }
+  if (template.kind === 'source') {
+    const source = paramRoll < 0.5 ? 'player' : 'worker';
+    const qty = source === 'player' ? 3 : 10;
+    return { id: `source-${source}-${locationId}`, templateId: template.id, kind: 'source',
+      source, locationId, qty, reward: Math.max(100, Math.round(expectedPerCatch(state, locationId, stampAt) * qty * 2.2)) };
   }
   // rarity: keep early game achievable — common-tier orders stay away, the two
   // offered tiers are Uncommon (plentiful) and Rare-or-better (a real push).
@@ -710,7 +832,7 @@ function makeOffer(state) {
       rarity: 'uncommon',
       locationId: null,
       qty: 8,
-      reward: Math.max(90, Math.round(expectedPerCatch(state, locationId) * 8 * 1.6)),
+      reward: Math.max(90, Math.round(expectedPerCatch(state, locationId, stampAt) * 8 * 1.6)),
     };
   }
   return {
@@ -720,7 +842,7 @@ function makeOffer(state) {
     rarity: 'rare',
     locationId: null,
     qty: 2,
-    reward: Math.max(140, Math.round(expectedPerCatch(state, locationId) * 2 * 3.2)),
+    reward: Math.max(140, Math.round(expectedPerCatch(state, locationId, stampAt) * 2 * 3.2)),
   };
 }
 
@@ -731,8 +853,48 @@ function makeOffer(state) {
 export function generateContracts(state, now) {
   if (state.contract.accepted) return { ok: false, reason: 'one_at_a_time' };
   const settle = advanceState(state, now);
-  state.contract.available = [makeOffer(state), makeOffer(state), makeOffer(state)];
+  refillBoard(state, now);
   return { ok: true, offers: state.contract.available, settle };
+}
+
+function refillBoard(state, stampAt = state.processedAt) {
+  // Distinct objectives on each board, so the three offers invite different setups.
+  const first = state.contract.rngState % CONTRACT_TEMPLATES.length;
+  state.contract.available = Array.from({ length: 3 }, (_, i) =>
+    makeOffer(state, CONTRACT_TEMPLATES[(first + i) % CONTRACT_TEMPLATES.length], stampAt));
+}
+
+function autoAcceptContract(state, stampAt = state.processedAt) {
+  if (state.contract.accepted || !state.contract.available.length) return;
+  const eligible = state.contract.available.filter((offer) => contractRatePerMinute(state, offer, stampAt) > 0);
+  if (!eligible.length) refillBoard(state, stampAt);
+  const [best] = [...state.contract.available]
+    .filter((offer) => contractRatePerMinute(state, offer, stampAt) > 0)
+    .sort((a, b) => (a.qty / contractRatePerMinute(state, a, stampAt)) - (b.qty / contractRatePerMinute(state, b, stampAt)));
+  if (!best) return;
+  state.contract.accepted = { ...best, count: 0 };
+  state.contract.available = [];
+}
+
+function contractRatePerMinute(state, offer, stampAt) {
+  if (offer.kind === 'source' && offer.source === 'player') return 0;
+  let rate = 0;
+  for (const worker of state.workers) {
+    const odds = catchOdds(state, worker.locationId, worker.baitId, 'worker', stampAt, worker);
+    const probability = odds.reduce((sum, { species, probability: p }) => {
+      let hit = false;
+      if (offer.kind === 'qty') hit = species.locationId === offer.locationId;
+      if (offer.kind === 'size') hit = species.id === offer.speciesId;
+      if (offer.kind === 'rarity') hit = rarityAtLeast(species.rarity, offer.rarity);
+      if (offer.kind === 'species') hit = species.id === offer.speciesId;
+      if (offer.kind === 'trophy') hit = species.locationId === offer.locationId;
+      if (offer.kind === 'source') hit = species.locationId === offer.locationId;
+      return sum + (hit ? p : 0);
+    }, 0);
+    const sizeFactor = offer.kind === 'trophy' ? 0.1 : offer.kind === 'size' ? 0.45 : 1;
+    rate += probability * sizeFactor * 60_000 / workerCastDurationMs(state, worker);
+  }
+  return rate;
 }
 
 /** Accept an offer. Only catches made after this moment count toward it. */
@@ -767,16 +929,22 @@ function applyContractProgress(state, result) {
   if (c.kind === 'qty' && species.locationId === c.locationId) hit = true;
   if (c.kind === 'size' && result.speciesId === c.speciesId && result.weight >= c.threshold) hit = true;
   if (c.kind === 'rarity' && rarityAtLeast(species.rarity, c.rarity)) hit = true;
+  if (c.kind === 'species' && result.speciesId === c.speciesId) hit = true;
+  if (c.kind === 'trophy' && species.locationId === c.locationId && result.trophy) hit = true;
+  if (c.kind === 'source' && species.locationId === c.locationId && result.source === c.source) hit = true;
   if (!hit) return;
   c.count += 1;
   if (c.count >= c.qty) {
-    const bonus = stallValue(state, c.reward); // prestige/stall applied once, here
+    const rewardBoost = (state.legacy?.perks?.includes('merchantRoutes') ? 1.25 : 1) * (eventActive(state, 'festival', result.at) ? 1.5 : 1);
+    const bonus = stallValue(state, Math.round(c.reward * rewardBoost), result.at);
     state.contract.accepted = null;
     state.contract.completed += 1;
     state.contract.earnedCoins += bonus;
     state.coins += bonus;
     addRunEarnings(state, bonus);
     result.contractComplete = { reward: bonus, templateId: c.templateId };
+    if (state.officeLevel >= 1) refillBoard(state, result.at);
+    if (state.officeLevel >= 2) autoAcceptContract(state, result.at);
   }
 }
 
@@ -787,7 +955,13 @@ function applyContractProgress(state, result) {
 /** Run earnings needed at the current prestige count. */
 export function prestigeThreshold(state) {
   const count = state.prestige ? state.prestige.count : 0;
-  return PRESTIGE.baseThreshold + PRESTIGE.thresholdGrowth * count;
+  return prestigeThresholdForCount(count);
+}
+
+export function prestigeThresholdForCount(count) {
+  return count < 3
+    ? PRESTIGE.baseThreshold + PRESTIGE.thresholdGrowth * count
+    : PRESTIGE.lateThresholdBase * PRESTIGE.lateThresholdMult ** (count - 3);
 }
 
 /** Ponds that unlock at a given prestige count (beyond the always-available ones). */
@@ -813,14 +987,24 @@ export function prestigeEligibility(state) {
   const threshold = prestigeThreshold(state);
   const earnings = state.prestige ? state.prestige.runEarnings : 0;
   const workers = state.ownedWorkers;
+  const discovered = discoveredCount(state);
+  const trophySpecies = Object.values(state.collection).filter((entry) => entry.trophies > 0).length;
+  const trophySpeciesNeeded = Math.min(25, PRESTIGE.trophySpeciesBase + PRESTIGE.trophySpeciesPerPrestige * (state.prestige?.count || 0));
+  const discoveriesNeeded = Math.min(26, PRESTIGE.discoveriesBase + PRESTIGE.discoveriesPerPrestige * (state.prestige?.count || 0));
   return {
-    eligible: earnings >= threshold && workers >= PRESTIGE.minWorkers,
+    eligible: earnings >= threshold && workers >= PRESTIGE.minWorkers && discovered >= discoveriesNeeded && trophySpecies >= trophySpeciesNeeded,
     earnings,
     threshold,
     earningsMet: earnings >= threshold,
     workers,
     workersNeeded: PRESTIGE.minWorkers,
     workersMet: workers >= PRESTIGE.minWorkers,
+    discovered,
+    discoveriesNeeded,
+    discoveriesMet: discovered >= discoveriesNeeded,
+    trophySpecies,
+    trophySpeciesNeeded,
+    trophySpeciesMet: trophySpecies >= trophySpeciesNeeded,
     multiplier: earningsMultiplier(state),
     nextMultiplier: 1 + PRESTIGE.multCoefficient * ((state.prestige ? state.prestige.count : 0) + 1),
     destination: prestigeDestination(state),
@@ -859,14 +1043,16 @@ export function performPrestige(state, now) {
       ...state.player,
       active: null, // any unfinished hand cast is voided without penalty
     },
+    legacy: { points: state.legacy.points + 1, perks: state.legacy.perks.slice() },
+    event: { ...state.event, activeId: null, startedAt: 0, endsAt: 0, nextAt: Math.floor(now) + 25 * 60_000 },
   };
 
   // --- the reset business
   const fresh = createNewState(now, previous.count * 7919 + 13);
   fresh.schemaVersion = state.schemaVersion;
   fresh.coins = 0;
-  fresh.ownedWorkers = 1;
-  fresh.workers = [createWorker(1)];
+  fresh.ownedWorkers = preserved.legacy.perks.includes('starterCrew') ? 2 : 1;
+  fresh.workers = Array.from({ length: fresh.ownedWorkers }, (_, i) => createWorker(i + 1));
   fresh.dockLevel = 0;
   fresh.stallLevel = 0;
   fresh.trainingLevel = 0;
@@ -882,10 +1068,10 @@ export function performPrestige(state, now) {
   fresh.castCount = preserved.castCount;
   fresh.unlockedLocations = preserved.unlockedLocations;
   fresh.player = { ...preserved.player, locationId: destination.locationId, rngState: state.player.rngState };
+  fresh.legacy = preserved.legacy;
+  fresh.event = preserved.event;
   // The free worker starts at the new home pond with the viable free setup.
-  fresh.workers[0].locationId = destination.locationId;
-  fresh.workers[0].baitId = 'bait_worms';
-  fresh.workers[0].progressMs = 0;
+  for (const worker of fresh.workers) worker.locationId = destination.locationId;
   fresh.processedAt = Math.floor(now);
   fresh.lastSeenAt = Math.floor(now);
 

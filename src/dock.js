@@ -4,16 +4,21 @@
 
 import {
   DOCK_LEVELS,
+  CONTRACT_OFFICE_LEVELS,
+  EVENT_CHOICES,
   HIRE_COSTS,
   PLAYER_CAST,
   RARITY_LABEL,
   RARITY_ORDER,
   SPECIES,
   STALL_LEVELS,
+  conditionAt,
+  conditionRemainingMs,
   getBait,
   getLocation,
   getRod,
   getSpecies,
+  workerRole,
 } from './data.js';
 import {
   dockCapacity,
@@ -48,13 +53,14 @@ export function renderWorkers(state) {
 
   const rows = state.workers.map((worker) => {
     const est = workerEstimate(state, worker);
+    const role = workerRole(worker.id);
     const baitNote = getBait(worker.baitId).castMult > 1
       ? ` · casts every ${formatDuration(Math.max(1, est.perCatch ? 1 : 1) * 1)}` : '';
     void baitNote;
     return `
       <article class="worker" data-worker="${worker.id}">
         <div class="worker-head">
-          <span class="worker-name">${escape(worker.name)}</span>
+          <span class="worker-name">${escape(worker.name)} · ${escape(role.name)}</span>
           <span class="worker-est muted" title="Estimate from this location's fish and bait — actual results vary">
             ≈ ${formatCoins(est.perHour)}/h
           </span>
@@ -70,7 +76,7 @@ export function renderWorkers(state) {
               ${baitOptions(state, worker)}
             </select>
           </label>
-          <span class="worker-stats muted">${nf.format(worker.catches)} caught</span>
+          <span class="worker-stats muted">${nf.format(worker.catches)} caught · ${escape(role.detail)}</span>
         </div>
       </article>`;
   }).join('');
@@ -101,6 +107,8 @@ export function renderInvestments(state) {
   const currentDock = DOCK_LEVELS[state.dockLevel];
   const currentStall = STALL_LEVELS[state.stallLevel];
   const canPay = (cost) => (state.coins >= cost ? '' : ' disabled');
+  const office = CONTRACT_OFFICE_LEVELS[state.officeLevel];
+  const nextOffice = CONTRACT_OFFICE_LEVELS[state.officeLevel + 1];
 
   const dockHtml = dock
     ? `<button type="button" class="btn" data-invest="dock" data-focus="inv-dock" ${canPay(dock.cost)}>
@@ -115,8 +123,11 @@ export function renderInvestments(state) {
   return `
     <div class="invest-row">${dockHtml}</div>
     <div class="invest-row">${stallHtml}</div>
-    <p class="muted">Rod upgrades (Tackle &amp; Upgrades) shorten every worker's cast as well as yours —
-    one purchase speeds up the whole operation. Estimates are only estimates: luck moves each
+    <div class="invest-row">${nextOffice
+      ? `<button type="button" class="btn" data-buy-office data-focus="buy-office" ${canPay(nextOffice.cost)}>Build ${escape(nextOffice.name)} — ${formatCoins(nextOffice.cost)}</button>`
+      : '<span class="owned-note">Contract Office fully upgraded.</span>'}</div>
+    <p class="muted">${escape(office.description)} ${nextOffice ? `Next: ${escape(nextOffice.description)}` : ''}</p>
+    <p class="muted">The selected rod changes worker pace and may improve fish size or rare odds for the crew and you. Estimates are only estimates: luck moves each
     worker up or down.</p>`;
 }
 
@@ -132,6 +143,9 @@ function contractText(c) {
     const species = getSpecies(c.speciesId);
     return `${c.qty} ${escape(species.name)} at ${formatWeight(c.threshold)} or heavier`;
   }
+  if (c.kind === 'species') return `${c.qty} ${escape(getSpecies(c.speciesId).name)} for a local order`;
+  if (c.kind === 'trophy') return `A trophy-size catch from ${escape(getLocation(c.locationId).name)}`;
+  if (c.kind === 'source') return `${c.qty} catches by ${c.source === 'player' ? 'you' : 'your crew'} at ${escape(getLocation(c.locationId).name)}`;
   return `${c.qty} fish of ${escape(RARITY_LABEL[c.rarity])} rarity or better (any location)`;
 }
 
@@ -179,7 +193,19 @@ export function renderContract(state) {
 }
 
 export function renderDockPanel(state) {
+  const now = state.processedAt;
+  const e = state.event;
+  const eventBlock = e.activeId && now < e.endsAt
+    ? `<p><strong>${escape(EVENT_CHOICES.find((item) => item.id === e.activeId)?.name || 'Event')}</strong> active · ${formatDuration(e.endsAt - now)} left</p>`
+    : now >= e.nextAt
+      ? `<p class="muted">A local opportunity is ready. Choose one for the next 20 minutes.</p><div class="event-options">${EVENT_CHOICES.map((item) => `<button type="button" class="btn" data-event="${item.id}" data-focus="event-${item.id}"><strong>${escape(item.name)}</strong><small>${escape(item.description)}</small></button>`).join('')}</div>`
+      : `<p class="muted">Next opportunity in ${formatDuration(e.nextAt - now)}.</p>`;
+  const waters = state.unlockedLocations.map((id) => {
+    const loc = getLocation(id);
+    return `<span><strong>${escape(loc.name)}</strong>: ${escape(conditionAt(id, now).name)}</span>`;
+  }).join(' · ');
   return `
+    <section class="dock-section conditions-strip"><h4>On the water</h4><p>${waters}</p><p class="muted">Conditions change in ${formatDuration(conditionRemainingMs(now))}. Preferred bait and weather improve fish odds, but no fish is ever unavailable.</p></section>
     <section class="dock-section">
       <h4>Your crew</h4>
       ${renderWorkers(state)}
@@ -191,5 +217,6 @@ export function renderDockPanel(state) {
     <section class="dock-section">
       <h4>Contract board</h4>
       ${renderContract(state)}
-    </section>`;
+    </section>
+    <section class="dock-section"><h4>Today's opportunity</h4>${eventBlock}</section>`;
 }

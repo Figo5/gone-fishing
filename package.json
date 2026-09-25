@@ -6,6 +6,7 @@
   "description": "Gone Fishing — a small cozy idle fishing game. Plain HTML/CSS/JS, no dependencies.",
   "scripts": {
     "test": "node --test test/*.test.js",
+    "build": "node tools/build.mjs",
     "start": "python3 -m http.server 8080",
     "simulate": "node tools/simulate.mjs"
   }

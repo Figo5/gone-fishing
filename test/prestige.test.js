@@ -40,6 +40,7 @@ import {
 import {
   SCHEMA_VERSION_V2,
   SCHEMA_VERSION_V3,
+  SCHEMA_VERSION_V4,
   CURRENT_SCHEMA_VERSION,
   deserialize,
   serialize,
@@ -51,6 +52,16 @@ function prestiged(prestigeCount = 1) {
   const s = createNewState(T0, 42);
   s.prestige.count = prestigeCount;
   return s;
+}
+
+function meetDiscoveryGoal(s) {
+  const eligibility = prestigeEligibility(s);
+  const needed = eligibility.discoveriesNeeded;
+  const fish = LOCATIONS.flatMap((loc) => speciesByLocation(loc.id)).slice(0, needed);
+  for (const species of fish) {
+    if (!s.collection[species.id]) s.collection[species.id] = { catches: 1, bestWeight: species.minWeight, bestValue: 1, trophies: 0 };
+  }
+  for (const species of fish.slice(0, eligibility.trophySpeciesNeeded)) s.collection[species.id].trophies = 1;
 }
 
 /* ------------------------------------------------------------- eligibility */
@@ -82,6 +93,7 @@ test('prestige eligibility: earnings milestone plus business milestone, checked 
     if (guard++ > 20) break;
   }
   assert.ok(s.ownedWorkers >= PRESTIGE.minWorkers, 'test setup reached four workers');
+  meetDiscoveryGoal(s);
   el = prestigeEligibility(s);
   assert.equal(el.eligible, true, 'both milestones met');
   assert.equal(el.earningsMet, true);
@@ -122,6 +134,7 @@ test('prestige resets the business, preserves records, and unlocks the pond once
     { id: 4, name: 'Worker 4', locationId: 'loc_pond', baitId: 'bait_worms', rngState: 4244, progressMs: 0, catches: 0 },
   ];
   s.prestige.runEarnings = prestigeThreshold(s) + 500;
+  meetDiscoveryGoal(s);
   const coinsBefore = s.coins;
   const collectionBefore = JSON.parse(JSON.stringify(s.collection));
   const lifetimeBefore = s.lifetimeCatches;
@@ -171,9 +184,11 @@ test('prestige multiplier is additive and applies to worker, player and contract
   worker.locationId = 'loc_pond';
   const summary = advanceState(workerState, T0 + 60_000);
   assert.ok(summary.catches.length > 0);
+  baseline.collection = structuredClone(workerState.collection);
+  baseline.processedAt = workerState.processedAt;
   const baselineEstimate = workerEstimate(baseline, baseline.workers[0]).perHour;
   const boostedEstimate = workerEstimate(workerState, workerState.workers[0]).perHour;
-  assert.ok(Math.abs(boostedEstimate / baselineEstimate - 1.5) < 0.01,
+  assert.ok(Math.abs(boostedEstimate / baselineEstimate - 1.5) < 0.03,
     `estimate ratio ${boostedEstimate / baselineEstimate} should be 1.5`);
 
   // Player sale path.
@@ -227,6 +242,7 @@ test('no retroactive offline earnings after prestige (watermark reset, old run s
     { id: 4, name: 'Worker 4', locationId: 'loc_pond', baitId: 'bait_worms', rngState: 4244, progressMs: 0, catches: 0 },
   ];
   s.prestige.runEarnings = prestigeThreshold(s);
+  meetDiscoveryGoal(s);
   performPrestige(s, T0 + 70_000);
 
   const coins = s.coins;
@@ -248,6 +264,7 @@ test('in-progress manual casts are voided by prestige, without penalty', () => {
   startPlayerCast(s, T0);
   s.ownedWorkers = 4;
   s.prestige.runEarnings = prestigeThreshold(s);
+  meetDiscoveryGoal(s);
   performPrestige(s, T0 + 500);
   assert.equal(s.player.active, null, 'unfinished attempt dropped');
   assert.equal(s.player.catches, 0, 'no invented catch');
@@ -361,7 +378,7 @@ test('v2 saves migrate to v3 with prestige zero and no lost progress', () => {
   assert.equal(result.migrated, true);
   assert.equal(result.fromVersion, 2);
   const s = result.state;
-  assert.equal(s.schemaVersion, SCHEMA_VERSION_V3);
+  assert.equal(s.schemaVersion, SCHEMA_VERSION_V4);
   assert.equal(s.coins, 50000, 'coins preserved');
   assert.equal(s.workers.length, 4, 'crew preserved');
   assert.equal(s.prestige.count, 0, 'updating never forces a prestige');

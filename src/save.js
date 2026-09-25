@@ -10,6 +10,9 @@
 import {
   BAITS,
   DOCK_LEVELS,
+  EVENT_CHOICES,
+  CONTRACT_OFFICE_LEVELS,
+  LEGACY_PERKS,
   HIRE_COSTS,
   LOCATIONS,
   PLAYER_CAST,
@@ -26,7 +29,8 @@ import { createNewState, createWorker } from './engine.js';
 export const SCHEMA_VERSION_V1 = 1;
 export const SCHEMA_VERSION_V2 = 2;
 export const SCHEMA_VERSION_V3 = 3;
-export const CURRENT_SCHEMA_VERSION = SCHEMA_VERSION_V3;
+export const SCHEMA_VERSION_V4 = 4;
+export const CURRENT_SCHEMA_VERSION = SCHEMA_VERSION_V4;
 export { SCHEMA_VERSION };
 
 export const SAVE_KEY = 'gone-fishing.save.v1';
@@ -94,13 +98,14 @@ export function validateState(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     return { ok: false, errors: ['Save is not an object.'] };
   }
-  if (input.schemaVersion !== SCHEMA_VERSION_V2 && input.schemaVersion !== SCHEMA_VERSION_V3) {
+  if (![SCHEMA_VERSION_V2, SCHEMA_VERSION_V3, SCHEMA_VERSION_V4].includes(input.schemaVersion)) {
     return {
       ok: false,
-      errors: [`Unsupported save schema version: ${String(input.schemaVersion)} (expected ${SCHEMA_VERSION_V2} or ${SCHEMA_VERSION_V3}).`],
+      errors: [`Unsupported save schema version: ${String(input.schemaVersion)}.`],
     };
   }
-  const isV3 = input.schemaVersion === SCHEMA_VERSION_V3;
+  const isV3 = input.schemaVersion >= SCHEMA_VERSION_V3;
+  const isV4 = input.schemaVersion === SCHEMA_VERSION_V4;
 
   if (!NON_NEG_INT(input.coins)) fail('coins must be a non-negative integer.');
   if (!NON_NEG_INT(input.lifetimeCatches)) fail('lifetimeCatches must be a non-negative integer.');
@@ -192,12 +197,20 @@ export function validateState(input) {
       if (a.kind === 'qty' && !LOCATION_IDS.has(a.locationId)) fail('accepted qty contract has an unknown location.');
       if (a.kind === 'size' && !SPECIES_IDS.has(a.speciesId)) fail('accepted size contract has an unknown species.');
       if (a.kind === 'rarity' && !['common', 'uncommon', 'rare'].includes(a.rarity)) fail('accepted rarity contract has an invalid rarity.');
+      if (isV4 && !['qty', 'size', 'rarity', 'species', 'trophy', 'source'].includes(a.kind)) fail('accepted contract kind is invalid.');
+      if (a.kind === 'species' && !SPECIES_IDS.has(a.speciesId)) fail('accepted species contract has an unknown species.');
+      if (a.kind === 'trophy' && !LOCATION_IDS.has(a.locationId)) fail('accepted trophy contract has an unknown location.');
+      if (a.kind === 'source' && (!LOCATION_IDS.has(a.locationId) || !['player', 'worker'].includes(a.source))) fail('accepted source contract is invalid.');
     }
     if (Array.isArray(c.available)) {
       for (const o of c.available) {
         if (!o || typeof o !== 'object' || typeof o.id !== 'string') { fail('offers must be objects with string ids.'); break; }
         if (!NON_NEG_INT(o.reward)) { fail('offer reward must be a non-negative integer.'); break; }
         if (!NON_NEG_INT(o.qty)) { fail('offer qty must be a positive integer.'); break; }
+        if (isV4 && !['qty', 'size', 'rarity', 'species', 'trophy', 'source'].includes(o.kind)) { fail('offer kind is invalid.'); break; }
+        if (o.locationId && !LOCATION_IDS.has(o.locationId)) { fail('offer location is invalid.'); break; }
+        if (o.speciesId && !SPECIES_IDS.has(o.speciesId)) { fail('offer species is invalid.'); break; }
+        if (o.kind === 'source' && !['player', 'worker'].includes(o.source)) { fail('offer source is invalid.'); break; }
       }
     }
   }
@@ -219,6 +232,27 @@ export function validateState(input) {
     if (INT(input.trainingLevel) && input.trainingLevel > 3) fail('trainingLevel out of range.');
     if (INT(input.reelControlLevel) && input.reelControlLevel > 3) fail('reelControlLevel out of range.');
   }
+  if (isV4) {
+    if (!NON_NEG_INT(input.officeLevel) || input.officeLevel >= CONTRACT_OFFICE_LEVELS.length) fail('officeLevel out of range.');
+    const legacy = input.legacy;
+    if (!legacy || typeof legacy !== 'object') fail('legacy block is missing.');
+    else {
+      if (!NON_NEG_INT(legacy.points)) fail('legacy.points must be a non-negative integer.');
+      if (!Array.isArray(legacy.perks) || new Set(legacy.perks).size !== legacy.perks.length ||
+          legacy.perks.some((id) => !LEGACY_PERKS.some((perk) => perk.id === id))) fail('legacy.perks contains invalid or duplicate ids.');
+      if (input.prestige && NON_NEG_INT(input.prestige.count) &&
+          NON_NEG_INT(legacy.points) && Array.isArray(legacy.perks) && legacy.points + legacy.perks.length > input.prestige.count) {
+        fail('Legacy points exceed earned prestiges.');
+      }
+    }
+    const e = input.event;
+    if (!e || typeof e !== 'object') fail('event block is missing.');
+    else {
+      if (e.activeId !== null && !EVENT_CHOICES.some((choice) => choice.id === e.activeId)) fail('event.activeId is invalid.');
+      for (const field of ['startedAt', 'endsAt', 'nextAt', 'completed']) if (!NON_NEG_INT(e[field])) fail(`event.${field} must be non-negative.`);
+      if (e.activeId && e.endsAt <= e.startedAt) fail('Active event has invalid timing.');
+    }
+  }
 
   // Collection + recent (same shape as v1).
   if (!input.collection || typeof input.collection !== 'object' || Array.isArray(input.collection)) {
@@ -229,6 +263,7 @@ export function validateState(input) {
       if (!entry || typeof entry !== 'object') { fail(`collection.${id} is not an object.`); continue; }
       if (!NON_NEG_INT(entry.catches)) fail(`collection.${id}.catches must be a non-negative integer.`);
       if (!NON_NEG(entry.bestWeight)) fail(`collection.${id}.bestWeight must be non-negative.`);
+      if (isV4 && !NON_NEG_INT(entry.bestValue)) fail(`collection.${id}.bestValue must be a non-negative integer.`);
       if (!NON_NEG_INT(entry.trophies)) fail(`collection.${id}.trophies must be a non-negative integer.`);
       if (NON_NEG_INT(entry.trophies) && NON_NEG_INT(entry.catches) && entry.trophies > entry.catches) {
         fail(`collection.${id} has more trophies than catches.`);
@@ -270,7 +305,7 @@ export function validateState(input) {
  */
 export function migrateV2toV3(v2) {
   if (!v2 || typeof v2 !== 'object') throw new Error('migrateV2toV3 needs a state object');
-  if (v2.schemaVersion === SCHEMA_VERSION_V3 && v2.prestige) return { state: v2, migrated: false };
+  if (v2.schemaVersion >= SCHEMA_VERSION_V3 && v2.prestige) return { state: v2, migrated: false };
 
   const v3 = JSON.parse(JSON.stringify(v2));
   v3.schemaVersion = SCHEMA_VERSION_V3;
@@ -283,6 +318,20 @@ export function migrateV2toV3(v2) {
   v3.trainingLevel = 0;
   v3.reelControlLevel = 0;
   return { state: v3, migrated: true };
+}
+
+/** Add run automation, rotating opportunities, and earned legacy choices.
+ * Old catch values cannot be reconstructed honestly, so records begin at zero. */
+export function migrateV3toV4(v3) {
+  if (!v3 || typeof v3 !== 'object') throw new Error('migrateV3toV4 needs a state object');
+  if (v3.schemaVersion === SCHEMA_VERSION_V4) return { state: v3, migrated: false };
+  const v4 = JSON.parse(JSON.stringify(v3));
+  v4.schemaVersion = SCHEMA_VERSION_V4;
+  v4.officeLevel = 0;
+  v4.legacy = { points: 0, perks: [] };
+  v4.event = { activeId: null, startedAt: 0, endsAt: 0, nextAt: Math.floor(v3.processedAt) + 25 * 60_000, completed: 0 };
+  for (const entry of Object.values(v4.collection || {})) entry.bestValue = 0;
+  return { state: v4, migrated: true };
 }
 
 /**
@@ -311,7 +360,7 @@ export function migrateV1toV2(v1) {
   v2.lifetimeCoins = v1.lifetimeCoins;
   v2.playTimeMs = v1.playTimeMs || 0;
   v2.castCount = v1.castCount || v1.lifetimeCatches;
-  v2.collection = v1.collection || {};
+  v2.collection = Object.fromEntries(Object.entries(v1.collection || {}).map(([id, entry]) => [id, { ...entry, bestValue: 0 }]));
   v2.recent = (v1.recent || []).map((r) => ({ ...r, source: 'worker' }));
   v2.recentCounter = v1.recentCounter || (v1.recent ? v1.recent.length : 0);
   v2.processedAt = stamp;
@@ -362,26 +411,35 @@ export function deserialize(text) {
     return { ok: false, errors: ['Save is not an object.'] };
   }
 
+  if (parsed.schemaVersion === SCHEMA_VERSION_V4) {
+    const checked = validateState(parsed);
+    return checked.ok ? { ok: true, state: checked.state, migrated: false, fromVersion: 4 } : checked;
+  }
   if (parsed.schemaVersion === SCHEMA_VERSION_V3) {
     const checked = validateState(parsed);
-    return checked.ok ? { ok: true, state: checked.state, migrated: false, fromVersion: 3 } : checked;
+    if (!checked.ok) return checked;
+    const upgraded = migrateV3toV4(checked.state);
+    const rechecked = validateState(upgraded.state);
+    return rechecked.ok ? { ok: true, state: rechecked.state, migrated: true, fromVersion: 3 } : rechecked;
   }
   if (parsed.schemaVersion === SCHEMA_VERSION_V2) {
     const checked = validateState(parsed);
     if (!checked.ok) return checked;
-    const { state, migrated } = migrateV2toV3(checked.state);
-    const rechecked = validateState(state);
+    const v3 = migrateV2toV3(checked.state);
+    const v4 = migrateV3toV4(v3.state);
+    const rechecked = validateState(v4.state);
     if (!rechecked.ok) {
       return { ok: false, errors: ['Migration produced an invalid state.', ...rechecked.errors] };
     }
-    return { ok: true, state: rechecked.state, migrated, fromVersion: 2 };
+    return { ok: true, state: rechecked.state, migrated: true, fromVersion: 2 };
   }
   if (parsed.schemaVersion === SCHEMA_VERSION_V1) {
     const checked = validateV1(parsed);
     if (!checked.ok) return checked;
     const toV2 = migrateV1toV2(checked.value);
     const toV3 = migrateV2toV3(toV2.state);
-    const rechecked = validateState(toV3.state);
+    const toV4 = migrateV3toV4(toV3.state);
+    const rechecked = validateState(toV4.state);
     if (!rechecked.ok) {
       return { ok: false, errors: ['Migration produced an invalid state.', ...rechecked.errors] };
     }
@@ -389,12 +447,25 @@ export function deserialize(text) {
   }
   return {
     ok: false,
-    errors: [`Unsupported save schema version: ${String(parsed.schemaVersion)} (expected 1, ${SCHEMA_VERSION_V2}, or ${SCHEMA_VERSION_V3}).`],
+    errors: [`Unsupported save schema version: ${String(parsed.schemaVersion)} (expected 1–${SCHEMA_VERSION_V4}).`],
   };
 }
 
 export function serialize(state) {
-  return JSON.stringify(state);
+  // A live hand cast is intentionally transient. Saving its partial input would
+  // make the next load fail validation and could duplicate a catch on resume.
+  return JSON.stringify({ ...state, player: { ...state.player, active: null } });
+}
+
+export function backupToStorage(storage, state) {
+  if (!storage) return { ok: false, reason: 'unavailable' };
+  const key = `${BACKUP_KEY_PREFIX}prestige.${Date.now()}`;
+  try {
+    storage.setItem(key, serialize(state));
+    return { ok: true, key };
+  } catch (error) {
+    return { ok: false, reason: 'write_failed', error: error.message };
+  }
 }
 
 export function validateV2Raw(input) {
@@ -460,7 +531,7 @@ export function saveToStorage(storage, state, { backupRaw = null, wasMigrated = 
   if (!storage) return { ok: false, reason: 'unavailable' };
   try {
     if (wasMigrated && backupRaw) {
-      const flagKey = 'gone-fishing.migrated.v2';
+      const flagKey = 'gone-fishing.migrated.v4';
       if (storage.getItem(flagKey) !== '1') {
         storage.setItem(`${BACKUP_KEY_PREFIX}${Date.now()}`, backupRaw);
         storage.setItem(flagKey, '1');
@@ -474,5 +545,5 @@ export function saveToStorage(storage, state, { backupRaw = null, wasMigrated = 
 }
 
 export function exportSave(state) {
-  return JSON.stringify(state, null, 2);
+  return JSON.stringify(JSON.parse(serialize(state)), null, 2);
 }
