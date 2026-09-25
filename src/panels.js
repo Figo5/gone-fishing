@@ -7,11 +7,14 @@
 import {
   BAITS,
   LOCATIONS,
+  LOCATION_CAST_MULT,
   REEL_CONTROL_LEVELS,
   TRAINING_LEVELS,
   RARITY_LABEL,
   RODS,
+  SPECIES,
   castDurationMs,
+  conditionAt,
   getBait,
   getSpecies,
   speciesByLocation,
@@ -21,6 +24,7 @@ import {
   collectionEntry,
   currentCastDurationMs,
   discoveredCountFor,
+  locationMastery,
   stallValue,
 } from './engine.js';
 import { els, formatCoins, formatWeight, formatDuration, nf } from './ui.js';
@@ -34,12 +38,13 @@ const FISH_ART = { common: '🐟', uncommon: '🐠', rare: '🐡', epic: '🦈',
 export function renderCollection(state) {
   const found = Object.keys(state.collection).filter((id) => state.collection[id].catches > 0).length;
   const trophies = Object.values(state.collection).reduce((sum, e) => sum + (e.trophies || 0), 0);
-  els.collectionSummary.textContent = `${found}/15 species discovered · ${nf.format(trophies)} trophies landed`;
+  els.collectionSummary.textContent = `${found}/${SPECIES.length} species discovered · ${nf.format(trophies)} ${trophies === 1 ? 'trophy' : 'trophies'} landed`;
 
   els.collectionBody.innerHTML = LOCATIONS.map((location) => {
     const species = speciesByLocation(location.id);
     const unlocked = state.unlockedLocations.includes(location.id);
     const foundHere = discoveredCountFor(state, location.id);
+    const mastery = locationMastery(state, location.id);
     const cards = species.map((fish) => {
       const entry = collectionEntry(state, fish.id);
       const known = entry.catches > 0;
@@ -59,8 +64,10 @@ export function renderCollection(state) {
             ? `<dl>
                  <dt>Caught</dt><dd>${nf.format(entry.catches)}</dd>
                  <dt>Best</dt><dd>${formatWeight(entry.bestWeight)}</dd>
+                 <dt>Best sale</dt><dd>${entry.bestValue ? `${formatCoins(entry.bestValue)} coins` : 'Awaiting a new record'}</dd>
                  <dt>Trophies</dt><dd>${nf.format(entry.trophies)}</dd>
                </dl>
+               <p class="hint">Best bait: ${escape(getBait(fish.preferredBaitId).name)} · best in ${escape(fish.preferredCondition)}</p>
                <p class="hint">${hint}</p>`
             : `<dl><dt>Status</dt><dd>Undiscovered</dd></dl>
                <p class="hint">${hint}</p>`}
@@ -68,10 +75,13 @@ export function renderCollection(state) {
     }).join('');
     const lockNote = unlocked
       ? ''
-      : ` — locked, unlock for ${formatCoins(location.cost)} coins in Tackle &amp; Upgrades`;
+      : location.prestige
+        ? ` — opens at prestige ${location.prestige}`
+        : ` — locked, unlock for ${formatCoins(location.cost)} coins in Tackle &amp; Upgrades`;
     return `
       <section class="location-group">
-        <h4>${escape(location.name)} <span class="progress">${foundHere}/5</span>${lockNote}</h4>
+        <h4>${escape(location.name)} <span class="progress">${foundHere}/${species.length}</span>${lockNote}</h4>
+        <p class="muted">Discovery ${mastery.caught}/${mastery.total}${mastery.discovered ? ' ✓ local sales +8%' : ''} · trophy species ${mastery.trophies}/${mastery.total}${mastery.trophy ? ' ✓ larger catches here' : ''}</p>
         <div class="cards">${cards}</div>
       </section>`;
   }).join('');
@@ -150,7 +160,10 @@ export function renderTackle(state) {
         </div>
         <p class="muted" style="margin:0">${escape(rod.blurb)}</p>
         <ul class="modifiers">
-          <li><span class="mod-label">Cast time</span><span class="mod-value">${rod.castSeconds}s (everyone: all ${workerCount} worker${workerCount === 1 ? '' : 's'} + you)</span></li>
+          <li><span class="mod-label">Worker cast</span><span class="mod-value">${rod.castSeconds}s base (${workerCount} worker${workerCount === 1 ? '' : 's'})</span></li>
+          ${rod.rareMult ? `<li><span class="mod-label">Rare odds</span><span class="mod-value">×${rod.rareMult}</span></li>` : ''}
+          ${rod.sizeBias ? `<li><span class="mod-label">Size roll</span><span class="mod-value">×${rod.sizeBias} bias</span></li>` : ''}
+          ${rod.favoredLocations ? `<li><span class="mod-label">Specialty</span><span class="mod-value">${rod.favoredLocations.map((id) => LOCATIONS.find((l) => l.id === id).name).join(', ')} · ${Math.round((1 - rod.locationSpeed) * 100)}% faster</span></li>` : ''}
           ${tier ? `<li><span class="mod-label">Unlock</span><span class="mod-value">${tierMet ? 'unlocked' : `requires prestige ${tier}`}</span></li>` : ''}
         </ul>
         <div class="row">${action}</div>
@@ -161,7 +174,7 @@ export function renderTackle(state) {
     const owned = state.ownedBaits.includes(bait.id);
     const selected = state.player.baitId === bait.id;
     const affordable = state.coins >= bait.cost;
-    const mods = [['Cast time', bait.castMult === 1 ? 'Full speed' : `×${bait.castMult} slower casts`, bait.castMult === 1 ? '' : 'down']];
+    const mods = [['Worker pace', bait.castMult === 1 ? 'Full speed when assigned' : `×${bait.castMult} cast time when assigned`, bait.castMult === 1 ? '' : 'down']];
     const median = bait.sizeBias === 1 ? 0.5 : Math.pow(0.5, 1 / bait.sizeBias);
     mods.push(['Fish size', bait.sizeBias === 1 ? 'Even spread' : `Median at ${Math.round(median * 100)}% of the range`, median > 0.5 ? 'up' : 'down']);
     const tier = bait.prestige || 0;
@@ -209,8 +222,9 @@ export function renderTackle(state) {
         </div>
         <p class="muted" style="margin:0">${escape(location.blurb)}</p>
         <ul class="modifiers">
-          <li><span class="mod-label">Species</span><span class="mod-value">${species.map((s) => s.name).join(', ')}</span></li>
-          <li><span class="mod-label">Biggest</span><span class="mod-value">${escape(biggest.name)}, up to ${formatWeight(biggest.maxWeight)}</span></li>
+          <li><span class="mod-label">Species</span><span class="mod-value">${species.filter((s) => (state.collection[s.id]?.catches || 0) > 0).length}/${species.length} discovered · new names appear in the Collection</span></li>
+          <li><span class="mod-label">Size record</span><span class="mod-value">Up to ${formatWeight(biggest.maxWeight)} — discover the species to reveal its name</span></li>
+          <li><span class="mod-label">Conditions</span><span class="mod-value">${escape(conditionAt(location.id, state.processedAt).name)} now · cast pace ×${LOCATION_CAST_MULT[location.id]}</span></li>
         </ul>
         <div class="row">${action}</div>
       </article>`;
@@ -219,7 +233,7 @@ export function renderTackle(state) {
   els.tackleBody.innerHTML = `
     <section class="shop-group">
       <h4>Rods — one purchase speeds the whole operation</h4>
-      <p class="muted">Every worker casts with the operation's rod, and so do you when fishing by hand.</p>
+      <p class="muted">The selected rod changes worker pace and can improve size or rare odds for everyone. Hand fishing still uses the reel game.</p>
       <div class="shop-list">${RODS.map(rodItem).join('')}</div>
     </section>
     <section class="shop-group">
@@ -239,7 +253,7 @@ export function renderTackle(state) {
       <h4>Reel control — a wider timing target for hand-fishing</h4>
       <div class="shop-list">${reelItem(state)}</div>
     </section>
-    <p class="muted">Current cast time: ${formatDuration(currentCastDurationMs(state))} per cast for everyone.</p>
+    <p class="muted">Base worker cast time: ${formatDuration(currentCastDurationMs(state))} before pond, role and bait effects.</p>
   `;
 }
 
@@ -257,7 +271,7 @@ function trainingItem(state) {
         <span class="item-name">${escape(level.name)}</span>
         <span class="item-cost">Level ${state.trainingLevel + 1} of ${TRAINING_LEVELS.length}</span>
       </div>
-      <p class="muted" style="margin:0">Crew training shortens every worker's cast (yours too). Current effect: ×${level.mult} cast time.</p>
+      <p class="muted" style="margin:0">Crew training shortens automatic casts. Your hand-fishing uses the reel minigame. Current effect: ×${level.mult} worker cast time.</p>
       <ul class="modifiers">
         <li><span class="mod-label">Current</span><span class="mod-value">×${level.mult} cast time (min 5s)</span></li>
         ${next ? `<li><span class="mod-label">Next</span><span class="mod-value">×${next.mult} cast time — ${formatCoins(next.cost)} coins</span></li>` : ''}

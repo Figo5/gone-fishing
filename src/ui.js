@@ -7,12 +7,13 @@
 import {
   AWAY_CAP_HOURS,
   RARITY_LABEL,
+  SPECIES,
+  conditionAt,
   getLocation,
   getRod,
   getSpecies,
 } from './data.js';
 import {
-  currentCastDurationMs,
   discoveredCount,
   dockName,
   stallMultiplier,
@@ -101,7 +102,7 @@ export function clearBanner(key) {
 
 export function renderHeader(state, workerIncome = null) {
   els.coins.textContent = formatCoins(state.coins);
-  els.collection.textContent = `${discoveredCount(state)}/15`;
+  els.collection.textContent = `${discoveredCount(state)}/${SPECIES.length}`;
   els.trophies.textContent = nf.format(trophyTotal(state));
   if (els.income) {
     els.income.textContent = workerIncome === null ? '—' : `≈ ${formatCoins(workerIncome)}/h`;
@@ -116,7 +117,7 @@ export function renderHeader(state, workerIncome = null) {
 let sceneKey = null;
 
 function shortLocation(id) {
-  return id === 'loc_pond' ? 'Pond' : id === 'loc_river' ? 'River' : 'Lake';
+  return ({ loc_pond: 'Pond', loc_river: 'River', loc_lake: 'Lake', loc_cedar: 'Cedar', loc_frost: 'Frostwater', loc_mere: 'Starlight' })[id] || getLocation(id)?.name || 'water';
 }
 
 function sceneDescription(state, shownLocationId) {
@@ -135,15 +136,17 @@ export function renderScene(state) {
   // The scene shows the dock: the location the player is fishing at, or the
   // busiest worker location if the player is somewhere unstarted.
   const shown = state.player.locationId || state.unlockedLocations[0];
+  const condition = conditionAt(shown, state.processedAt).id;
   const awayWorkers = state.workers
     .filter((w) => w.locationId !== shown)
     .map((w) => ({ label: shortLocation(w.locationId) }));
   const key = [
-    shown, state.dockLevel, state.stallLevel, state.workers.length,
+    shown, condition, state.dockLevel, state.stallLevel, state.workers.length,
     state.workers.map((w) => w.locationId).join(','),
   ].join('|');
   if (key === sceneKey) return;
   sceneKey = key;
+  els.scene.className = `scene weather-${condition}`;
 
   const sceneLocation = { scene: LOCATION_SCENE[shown] || 'pond' };
   els.scene.innerHTML = sceneSvg(sceneLocation, {
@@ -166,7 +169,7 @@ export function renderControls(state) {
   const rod = getRod(state.rodId);
   els.controlLocation.textContent = `${dockName(state)} — ${state.workers.length} worker${state.workers.length === 1 ? '' : 's'}`;
   els.controlSetup.innerHTML =
-    `Shared rod: ${escapeHtml(rod.name)} (${Math.round(currentCastDurationMs(state) / 1000)}s casts) · ` +
+    `Shared rod: ${escapeHtml(rod.name)} (${rod.castSeconds}s base casts; water and crew change pace) · ` +
     `stall ×${stallMultiplier(state).toFixed(1)} · <strong>${state.paused ? 'Paused — nothing is earning' : 'Business running'}</strong>`;
   els.toggle.textContent = state.paused ? 'Resume business' : 'Pause business';
   els.toggle.setAttribute('aria-pressed', String(state.paused));
@@ -221,16 +224,18 @@ export function renderAwaySummary(summary, state) {
     `<div><dt>Time credited</dt><dd>${formatClock(summary.creditedMs)}</dd></div>`,
     `<div><dt>Fish caught</dt><dd>${nf.format(summary.catches.length)}</dd></div>`,
     `<div><dt>Coins earned</dt><dd>${formatCoins(summary.coins)}</dd></div>`,
-    `<div><dt>Workers paid</dt><dd>${state.workers.length}</dd></div>`,
+    `<div><dt>Crew at work</dt><dd>${state.workers.length}</dd></div>`,
   ];
 
   const highlights = [];
-  if (summary.newSpecies.length) {
-    const names = [...new Set(summary.newSpecies)].map((id) => getSpecies(id).name);
+  const newSpecies = summary.catches.filter((catchResult) => catchResult.isNewSpecies).map((catchResult) => catchResult.speciesId);
+  const records = summary.catches.filter((catchResult) => catchResult.isRecord);
+  if (newSpecies.length) {
+    const names = [...new Set(newSpecies)].map((id) => getSpecies(id).name);
     highlights.push(`<li><strong>New species:</strong> ${names.map(escapeHtml).join(', ')}</li>`);
   }
-  if (summary.records.length) {
-    const best = summary.records
+  if (records.length) {
+    const best = records
       .map((r) => ({ ...r, species: getSpecies(r.speciesId) }))
       .sort((a, b) => b.weight / b.species.maxWeight - a.weight / a.species.maxWeight)[0];
     highlights.push(`<li><strong>New personal best:</strong> ${escapeHtml(best.species.name)} at ${formatWeight(best.weight)}</li>`);

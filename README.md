@@ -1,200 +1,71 @@
 # Gone Fishing
 
-A small, cozy idle fishing **tycoon with hands-on play and optional prestige**. Plain HTML, CSS
-and JavaScript with ES modules — no dependencies, no build step, no backend, no accounts. Saves
-live in `localStorage`; the business keeps earning for up to 8 hours while you are away, and you
-can pick up a rod yourself whenever you feel like a 3–5 minute session.
+A cozy idle fishing tycoon with optional hand fishing. Hire and assign a crew, choose tackle for
+each water, take short opportunities, complete orders, chase records, and move the business to
+new ponds. The game is plain HTML, CSS and JavaScript; progress stays in browser local storage.
 
-**[Play in your browser](https://gone-fishing1.netlify.app/)**
+![Gone Fishing dock](docs/preview.png)
 
-![Gone Fishing: the current worker dock at Stillwater Pond](docs/preview.png)
-
-```
-Hire workers → they fish their assigned waters automatically → fish yourself when you want to
-play → fill contracts → invest in dock, stall, crew and rods → prestige to unlock new ponds and
-a permanent earnings multiplier → keep hunting all thirty species.
-```
-
-## Run it
-
-Start any static server from the project root (ES modules will not load over `file://`):
+## Run and verify
 
 ```bash
-cd gone-fishing
-python3 -m http.server 8080        # or: npm start
+npm start           # http://127.0.0.1:8080
+npm test            # deterministic engine, migration, and progression tests
+npm run simulate    # six 12-hour play policies plus an active-fishing burst study
+npm run build       # syntax-check and assemble dist/
 ```
 
-Then open <http://127.0.0.1:8080/>.
+Node 24 is used for tests and the static build. The shipped `dist/` directory has no runtime
+dependencies or server API; any static host can serve it.
 
-Any other static server works the same way, e.g. `npx serve .` or `php -S localhost:8080`.
+## The current loop
 
-## Test it
+- **Six waters and thirty fish.** Stillwater Pond, Willow River and Moonlit Lake open in a run.
+  Cedar Hollow, Frostwater Basin and Starlight Mere arrive through the first three prestige
+  moves. Each water has its own cast pace, value, fish and conditions.
+- **Tackle choices.** Bait changes size, rarity and species preferences. Rods can be switched
+  after purchase: the Bamboo Pole favors large fish, Carbon works well in river current,
+  Ashgrove and Frostwind specialize in their home waters, while Pro and Tideglass seek rare
+  fish. Later equipment does not replace every earlier setup.
+- **Rotating conditions.** Each water changes every 25 minutes. A fish's preferred bait and
+  condition improve its odds; neither is a hard availability gate. The collection reveals
+  preferences after discovery.
+- **Crew and business.** Up to six workers have fixed specialties. Assign each a pond and bait.
+  Dock expansions add berths, the stall improves sales, and training improves automatic casts.
+  The Dispatch Desk refills the order board after completion; the Contract Office also accepts
+  a suitable worker order while you are away.
+- **Orders and opportunities.** Three offers present different objectives, including species,
+  trophy, size, rarity, location, crew and optional personal catches. Every hour offers a choice
+  of a 20-minute market, migration, trophy or festival bonus. Ignoring it has no penalty.
+- **Hand fishing.** The three-tap reel game rewards timing with larger fish and a better sale;
+  an ordinary catch remains available without timing. Active play can accelerate a contract,
+  chase a rare fish, or add a short burst of income while the crew continues fishing.
+- **Collection and prestige.** Each species keeps catches, best size, best sale and trophies.
+  Discovering or trophy-catching all five species in a pond grants a permanent local benefit.
+  Prestige asks for run earnings, workers, discoveries and trophy species. Each move awards a
+  legacy point for a permanent horizontal perk in addition to the existing sale multiplier.
+  Later prestige thresholds rise sharply, so a workday does not become a reset chain.
 
-Pure game-logic tests on Node's built-in test runner (Node 24; no test framework installed):
+## Saves
 
-```bash
-npm test                           # same as: node --test test/*.test.js
-```
+Schema v4 migrates v1, v2 and v3 saves. Existing coins, crew, gear, catches, records, unlocked
+waters and prestige count are preserved. New systems begin with default values; historical best
+sale values are left at zero because they cannot be reconstructed honestly. The original save
+is backed up on migration. Every prestige stores a separate pre-move backup.
 
-Verified on 2026-09-22: **54 tests passed** on Node.js 26.8.1. Current content includes
-6 waters, 30 species, 8 rods, 5 baits, up to 6 workers and optional prestige.
-There is no build step.
+The same deterministic engine processes live and offline time. Absences credit up to eight
+hours once; backward clocks grant nothing. In-progress hand casts are discarded on reload.
+Settings supports export, import and reset; invalid imports cannot replace the current game.
+The first tab holds the write lock where the browser supports it.
 
-## Look at the balance numbers (development only)
+## Balance notes
 
-```bash
-npm run simulate
-```
+`tools/simulate.mjs` uses fixed RNG seeds and explicit five or fifteen minute check-ins. A
+representative worker-heavy policy reaches its first paid worker around ten minutes and the
+river around fifteen; a relaxed fifteen-minute policy reaches the first three prestige ponds
+at roughly 1h45m, 3h00m and 4h15m. Later prestige moves take progressively longer. A
+five-minute burst of 30 hand casts after one hour adds about 20% to the crew's five-minute fish
+sales in the current model. These are simulated policies, not promises about every run.
 
-Runs a greedy purchase policy against fixed seeds and compares idle/active income,
-purchase timing and bait tradeoffs by running the engine. These are scripted balance
-measurements, not a human playtime guarantee.
-
-## Project layout
-
-```
-index.html          markup and panel containers (Dock, Fish Yourself, Collection, Tackle, New Pond)
-styles.css          palette, layout, scene styling, reel minigame, reduced-motion rules
-src/data.js         all content and tuning: 30 species across 6 locations, odds, weights,
-                    values, prices, worker/dock/stall/training/reel tables, prestige config
-src/rng.js          seedable RNG with a serializable uint32 state
-src/engine.js       the simulation: per-worker cast loops, business investments, player
-                    minigame, contracts, prestige transition, offline cap — all through advanceState
-src/save.js         serialization, v1→v2→v3 migration, strict validation, localStorage access
-src/scene.js        inline SVG dock scene (six palettes) that grows with the business
-src/ui.js           DOM helpers, header, recent feed, away summary
-src/panels.js       Collection and Tackle panels
-src/dock.js         Dock panel: workers, investments, contract board
-src/fishing.js      Fish Yourself panel and reel-timing quality math
-src/prestige.js     New Pond panel: requirements, reward, reset/preserve disclosure
-src/main.js         wiring: ticker, tabs, actions, settings, single-writer lock
-test/*.test.js      deterministic tests (engine, save/migration, content, prestige)
-tools/simulate.mjs  fixed-seed balance simulation, idle vs active policies, prestige cycles
-```
-
-## How the game plays
-
-**The business (Dock tab).** You start with one worker at the pond and room for a second
-(free). Every worker runs their own cast loop at their own assigned location and bait —
-different workers can fish different waters at the same time. Investments compete for the same
-coins: hire workers (worker 2 is free, 3–6 cost more), expand the dock (2→6 berths across four
-expansions), upgrade the fish stall (five levels including the starter, up to ×1.45 on every sale), and buy rod
-upgrades that are **shared across the whole operation** — one purchase speeds up every worker
-*and* your own hand-fishing. Each worker shows an income estimate (labeled as an estimate;
-luck moves it).
-
-**Fish Yourself (tab two).** A short optional timing game, available immediately: cast, then
-land three quick taps while a marker crosses a bright target zone. Better timing means a
-heavier fish and a better price (capped so hired workers stay relevant). Miss the taps or press
-"Take an ordinary fish" and you still sell a normal catch — dexterity never gates progression,
-there is no bait cost and no limit. Every hand catch feeds the collection and contracts.
-An 8–12 second attempt yields roughly a worker's catch value; a 3–5 minute session is a
-meaningful boost without making the business pointless.
-
-**Prestige — New Pond (tab five).** A voluntary fresh start, never automatic. Requirements:
-this run has earned **250,000 coins** (spending never reduces run earnings; the threshold grows
-by 350,000 per prestige) and you employ at least **4 workers**. Moving grants a permanent
-earnings multiplier — **1 + 0.25 × prestige count** (1.00× → 1.25× → 1.50× …) applied once to
-every sale and contract bonus — and unlocks the next pond: **Cedar Hollow** at prestige 1,
-**Frostwater Basin** at 2, **Starlight Mere** at 3 (five new species each, thirty total). After
-all ponds are unlocked, later prestiges settle on a pond you choose and grant the next
-multiplier. Preserved: collection, lifetime records, all unlocked waters, prestige count,
-tier access, pause setting. Reset: coins → 0, crew → one free worker at the new pond, dock/
-stall/training/reels → level 1, rods/bait → starters, contract cleared. A confirmation dialog
-spells all of this out, with a Cancel and an exportable backup; eligibility is rechecked at
-confirmation time and the transition is atomic.
-
-**Contracts (on the Dock).** The board shows three offers built only from content you have
-unlocked — quantity orders, "specimen above X lb" hunts on easy fish, and Uncommon/Rare-or-better
-orders. One accepted at a time; only catches made *after* accepting count; workers and hand
-catches both fill it; normal sales still happen — the listed reward is an **extra completion
-bonus paid once**. Abandon any time without penalty; a fresh board appears when you want one,
-never automatically while away.
-
-**Pause.** The header button pauses the business: workers stop, any in-progress hand cast is
-canceled without penalty, and nothing earns until you resume. Contract offers and progress are
-untouched. (Paused time earns nothing, and the 8-hour offline window only counts running time.)
-
-**Collection and Tackle** remain fully available on their own tabs. Tackle explains who
-benefits from each purchase, and which items need a prestige tier.
-
-- **Casting by workers is automatic.** One catch per cast cycle per worker. Catches sell
-  themselves; there is no inventory, no reeling for workers, no wages, hunger, energy or
-  repairs, and nothing to maintain.
-- **Six locations, thirty species.** Stillwater Pond (free) → Willow River → Moonlit Lake →
-  Cedar Hollow (prestige 1) → Frostwater Basin (2) → Starlight Mere (3). Five species per
-  location, always in the order Common, Uncommon, Rare, Epic, Legendary (58% / 28% / 10% /
-  3.5% / 0.5% base odds).
-- **Eight rods, five baits, four training levels, four reel-control levels.** New tiers
-  (Ashgrove, Frostwind, Tideglass, Merelight rods; Cedar Berries and Moonmote baits) unlock by
-  prestige count but are bought with in-run coins. Crew training shortens worker casts; reel
-  control widens the manual timing target. Cast time is floored at 5 seconds.
-- **Trophies** are fish at or above 90% of their species size range, not separate species.
-  The collection permanently keeps catch counts, best weights and trophy counts, and shows a
-  useful hint for fish you have not met yet.
-
-## Save, offline progress and recovery
-
-- **Saves are schema-versioned.** Version 3 stores the business plus prestige state: coins,
-  owned gear, unlocks, workers (each with its own location, bait, RNG stream and fractional cast
-  progress), dock/stall/training/reel levels, the player block, contracts, collection, lifetime
-  records, the processed-time watermark, a global pause flag, and the prestige block (count,
-  run earnings, last-prestige timestamp, home pond).
-- **Old saves migrate.** v1 → v2 (dock business) → v3 (prestige) in one load. Economy,
-  collection and records are preserved exactly; the old automatic fisher becomes Worker 1 with
-  the same water, bait, RNG stream and fractional progress. The v3 step sets prestigeCount 0 and
-  multiplier 1 (updating never forces a prestige) and seeds run earnings from lifetime coins —
-  the only trustworthy pre-existing counter; it never fabricates earnings from wallet balance.
-  A backup of the original save is written once, and migration is idempotent —
-  importing a migrated save changes nothing. Invalid saves are rejected without touching the
-  live game, and this holds for imports of old saves too.
-- **One simulation for live and offline play.** Everything goes through `advanceState(state, now)`,
-  which only uses timestamps — no DOM, no wall-clock waits. Every random consumer (each worker,
-  the player, the contract board) has its own persisted RNG stream, and each worker persists
-  fractional cast progress, so the same starting state and actions resolve identically whether
-  elapsed time is processed in one batch or a hundred.
-- **Up to 8 hours of absence is credited per absence, across all workers.** Anything beyond that
-  is discarded and the watermark advances past it, so a second reload cannot replay the capped
-  time. Nothing is ever awarded twice for the same timestamp, paused time is never credited, and
-  a backward clock awards nothing and cannot move the watermark backward.
-- **"While you were away"** appears after absences of a minute or more: time credited, fish
-  caught, coins earned, new species and notable personal bests. Earnings are already applied and
-  saved before it opens; closing or reopening it grants nothing. Player minigames are never
-  simulated offline — an unfinished hand cast is simply dropped.
-- Saves happen after resolved catches (at most once per second), after every purchase,
-  assignment or contract action, when the page is hidden and on `pagehide`.
-- **Hidden tabs do no work.** The animation loop stops when the page is hidden; the game
-  settles what was earned, cancels any in-progress hand cast without penalty, and catches up
-  when the page returns.
-- **Settings → Export Save** downloads a pretty-printed JSON backup; **Import Save** asks for
-  confirmation before replacing progress, and **Reset Game** asks for confirmation with a
-  working Cancel (Escape also cancels).
-- **Imports are validated before anything changes** — wrong schema version, unknown ids,
-  non-finite numbers, negative balances, six-worker limit, contract shape, and more. An import
-  replaces progress; it never adds to it.
-- **Broken storage is handled without crashing.** A corrupt save is never silently erased: the
-  raw text is copied to a `gone-fishing.corrupt.<time>` key, the game explains what happened and
-  offers to download the unreadable file. If storage is unavailable, a banner says progress is
-  not being saved.
-- **One active tab.** Where the Web Locks API exists the first tab holds an exclusive write
-  lock; other tabs open read-only with a warning. Without Web Locks the game falls back to a
-  `localStorage` heartbeat, which is best-effort and documented as such.
-
-## Accessibility and comfort
-
-Keyboard focus is always visible, every control has a readable name, the cast bar is a real
-`progressbar` with live values, the tab buttons expose `aria-selected`, and rarity is written
-out as text as well as colour-coded. `prefers-reduced-motion` turns off the bobber, ripple and
-cloud motion. There is no sound and no popups that block play. The layout is usable at 375px
-wide and uses the space well on desktop without stretching.
-
-## Deliberately not included
-
-No multiplayer, leaderboards, accounts, premium shop, real-money economy, daily rewards,
-streaks, quests, weather, skill trees, aquariums, service worker/PWA, analytics,
-any runtime AI call.
-
-## Status and license
-
-A complete, playable single-player browser game. Saves are local to a browser;
-export a backup before changing devices. No license file has been selected.
+The UI uses no external images, audio, tracking or in-game purchases. It supports keyboard
+controls, reduced motion and a 375px mobile layout.

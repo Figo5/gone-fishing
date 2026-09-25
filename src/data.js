@@ -82,17 +82,64 @@ export const LOCATIONS = [
   },
 ];
 
+/** Each water has its own rhythm. Conditions rotate every 25 minutes, with
+ * different offsets, so returning players have a fresh setup decision. */
+export const CONDITIONS = [
+  { id: 'clear', name: 'Clear water', description: 'A steady, easy bite.' },
+  { id: 'rain', name: 'Soft rain', description: 'Rain-loving fish move closer.' },
+  { id: 'fog', name: 'Morning fog', description: 'Shy fish leave cover.' },
+  { id: 'wind', name: 'Breezy water', description: 'The surface stirs.' },
+];
+export const CONDITION_MS = 25 * 60 * 1000;
+export function conditionAt(locationId, timestamp) {
+  const offset = Math.max(0, LOCATIONS.findIndex((l) => l.id === locationId));
+  return CONDITIONS[(Math.floor(timestamp / CONDITION_MS) + offset) % CONDITIONS.length];
+}
+export function conditionRemainingMs(timestamp) {
+  return CONDITION_MS - ((timestamp % CONDITION_MS) + CONDITION_MS) % CONDITION_MS;
+}
+
 /** Prestige earnings milestone (run earnings, coins). Scales with prestige count. */
 export const PRESTIGE = {
   /** runEarnings needed to prestige: base + growth * prestigeCount. */
   baseThreshold: 250000,
   thresholdGrowth: 350000,
+  /** After the three new waters, additional moves are long-term goals. */
+  lateThresholdBase: 8_000_000,
+  lateThresholdMult: 3,
   /** Minimum owned workers to be eligible. */
   minWorkers: 4,
+  /** A modest exploration goal; legendary catches are never mandatory. */
+  discoveriesBase: 6,
+  discoveriesPerPrestige: 4,
+  trophySpeciesBase: 3,
+  trophySpeciesPerPrestige: 3,
   /** Permanent multiplier: 1 + coefficient * prestigeCount. */
   multCoefficient: 0.25,
   maxWorkers: 6,
 };
+
+export const LEGACY_PERKS = [
+  { id: 'starterCrew', name: 'Trusted Deckhand', blurb: 'Start each future run with two workers.' },
+  { id: 'anglerLuck', name: 'Field Guide', blurb: '15% stronger rare-fish odds everywhere.' },
+  { id: 'merchantRoutes', name: 'Market Contacts', blurb: 'Contracts pay 25% more.' },
+  { id: 'recordKeeper', name: 'Record Keeper', blurb: 'Fish roll 12% larger across all waters.' },
+  { id: 'weatherSense', name: 'Weather Sense', blurb: 'Fish preferences for the current condition are stronger.' },
+  { id: 'crewBond', name: 'Crew Bond', blurb: 'Every worker casts 5% faster.' },
+];
+
+export const CONTRACT_OFFICE_LEVELS = [
+  { cost: 0, name: 'Paper Ledger', description: 'You choose and refresh contracts by hand.' },
+  { cost: 18000, name: 'Dispatch Desk', description: 'The board refills itself after each completion.' },
+  { cost: 90000, name: 'Contract Office', description: 'Automatically accepts the quickest new order.' },
+];
+
+export const EVENT_CHOICES = [
+  { id: 'market', name: 'Market Day', description: 'Every fish sale earns 25% more for 20 minutes.' },
+  { id: 'migration', name: 'Rare Migration', description: 'Rare, Epic and Legendary odds rise for 20 minutes.' },
+  { id: 'trophy', name: 'Trophy Waters', description: 'Fish size rolls improve for 20 minutes.' },
+  { id: 'festival', name: 'Harbor Festival', description: 'Contract completion bonuses rise for 20 minutes.' },
+];
 
 /** The three prestige ponds unlock at these prestige counts (and their cost is 0). */
 export const PRESTIGE_POND_UNLOCK = { loc_cedar: 1, loc_frost: 2, loc_mere: 3 };
@@ -267,19 +314,55 @@ export const SPECIES = [
   },
 ];
 
+/** Bait and condition knowledge becomes visible when a species is discovered.
+ * These are preferences, never hard gates: every fish remains possible at any time. */
+const FISH_HABITS = {
+  sp_bluegill: ['bait_worms', 'clear'], sp_yellowperch: ['bait_worms', 'rain'],
+  sp_largemouth: ['bait_minnows', 'fog'], sp_carp: ['bait_berries', 'rain'], sp_koi: ['bait_glow', 'fog'],
+  sp_creekchub: ['bait_worms', 'clear'], sp_rainbowtrout: ['bait_worms', 'rain'],
+  sp_smallmouth: ['bait_minnows', 'wind'], sp_pike: ['bait_minnows', 'fog'], sp_sturgeon: ['bait_glow', 'fog'],
+  sp_crappie: ['bait_worms', 'clear'], sp_walleye: ['bait_minnows', 'fog'],
+  sp_catfish: ['bait_worms', 'rain'], sp_laketrout: ['bait_minnows', 'wind'], sp_moonfin: ['bait_glow', 'fog'],
+  sp_pumpkinseed: ['bait_berries', 'clear'], sp_redbreast: ['bait_berries', 'rain'],
+  sp_warmpouth: ['bait_worms', 'fog'], sp_bowfin: ['bait_minnows', 'rain'], sp_emberpike: ['bait_berries', 'wind'],
+  sp_arcticchar: ['bait_worms', 'clear'], sp_grayling: ['bait_glow', 'wind'],
+  sp_bulltrout: ['bait_minnows', 'fog'], sp_glacierchar: ['bait_glow', 'rain'], sp_auroratrout: ['bait_moonmote', 'fog'],
+  sp_glimmerdace: ['bait_worms', 'clear'], sp_lanternperch: ['bait_glow', 'fog'],
+  sp_starwhisker: ['bait_minnows', 'rain'], sp_cometkoi: ['bait_moonmote', 'wind'], sp_mereavatar: ['bait_moonmote', 'fog'],
+};
+for (const species of SPECIES) {
+  [species.preferredBaitId, species.preferredCondition] = FISH_HABITS[species.id];
+}
+
 export const RODS = [
-  { id: 'rod_bamboo', name: 'Bamboo Pole', cost: 0, castSeconds: 20, blurb: 'The starter pole. Slow, but it always casts.' },
+  { id: 'rod_bamboo', name: 'Bamboo Pole', cost: 0, castSeconds: 20, sizeBias: 1.6, blurb: 'Slow and forgiving. Its flexible tip favors trophy-sized catches.' },
   { id: 'rod_fiberglass', name: 'Fiberglass Rod', cost: 900, castSeconds: 16, blurb: 'Lighter tip, quicker casts.' },
-  { id: 'rod_carbon', name: 'Carbon Spinning Rod', cost: 1800, castSeconds: 12, blurb: 'Fast, sensitive, good for river current.' },
-  { id: 'rod_ashgrove', name: 'Ashgrove Rod', cost: 6500, castSeconds: 10, blurb: 'Cedar-cured and balanced for long woodland sessions.', prestige: 1 },
-  { id: 'rod_pro', name: 'Pro Tournament Rod', cost: 12000, castSeconds: 9, blurb: 'The tournament standard. Fast and unforgiving.' },
-  { id: 'rod_frostwind', name: 'Frostwind Rod', cost: 30000, castSeconds: 8, blurb: 'Built for alpine gusts; hardly flexes at all.', prestige: 2 },
-  { id: 'rod_tideglass', name: 'Tideglass Rod', cost: 75000, castSeconds: 7, blurb: 'A crystalline blank that hums on the drop.', prestige: 2 },
+  { id: 'rod_carbon', name: 'Carbon Spinning Rod', cost: 1800, castSeconds: 12, favoredLocations: ['loc_river'], locationSpeed: 0.7, blurb: 'River current specialist: 30% faster at Willow River.' },
+  { id: 'rod_ashgrove', name: 'Ashgrove Rod', cost: 6500, castSeconds: 10, favoredLocations: ['loc_cedar'], locationSpeed: 0.65, sizeBias: 1.25, blurb: 'Cedar specialist: faster casts and larger fish there.', prestige: 1 },
+  { id: 'rod_pro', name: 'Pro Tournament Rod', cost: 12000, castSeconds: 9, rareMult: 1.7, blurb: 'Tournament rig: stronger Rare, Epic and Legendary odds.' },
+  { id: 'rod_frostwind', name: 'Frostwind Rod', cost: 30000, castSeconds: 8, favoredLocations: ['loc_frost'], locationSpeed: 0.65, blurb: 'Alpine specialist: 35% faster at Frostwater.', prestige: 2 },
+  { id: 'rod_tideglass', name: 'Tideglass Rod', cost: 75000, castSeconds: 7, rareMult: 2.2, blurb: 'Deep water survey rod: exceptional rare-fish odds.', prestige: 2 },
   { id: 'rod_merelight', name: 'Merelight Rod', cost: 190000, castSeconds: 6, blurb: 'Rods woven from mere-light. The fastest casts in the game.', prestige: 3 },
 ];
 
 /** Floor on cast duration so speed upgrades cannot make timing meaningless. */
 export const MIN_CAST_MS = 5000;
+
+export const LOCATION_CAST_MULT = {
+  loc_pond: 0.9, loc_river: 1.1, loc_lake: 1.25,
+  loc_cedar: 1, loc_frost: 1.3, loc_mere: 1.4,
+};
+
+/** Crew roles are inherent to the six workers and reward thoughtful assignments. */
+export const WORKER_ROLES = [
+  { name: 'Caretaker', detail: '15% faster at Stillwater', locations: ['loc_pond'], speed: 0.85 },
+  { name: 'Scout', detail: '25% better rare-fish odds', rareMult: 1.25 },
+  { name: 'Riverhand', detail: '20% faster at Willow River and Frostwater', locations: ['loc_river', 'loc_frost'], speed: 0.8 },
+  { name: 'Trophy Hunter', detail: 'Larger fish on every cast', sizeBias: 1.45 },
+  { name: 'Night Guide', detail: '30% better rare odds at Moonlit Lake and Starlight Mere', locations: ['loc_lake', 'loc_mere'], rareMult: 1.3 },
+  { name: 'Captain', detail: '10% faster everywhere', speed: 0.9 },
+];
+export const workerRole = (id) => WORKER_ROLES[(id - 1) % WORKER_ROLES.length];
 
 /**
  * Bait tradeoffs are real: only Worms keeps full cast speed.
@@ -383,6 +466,9 @@ export const CONTRACT_TEMPLATES = [
   { id: 'qty_location', kind: 'qty', label: 'Stock the stall' },
   { id: 'size_location', kind: 'size', label: 'Specimen hunt' },
   { id: 'rarity_any', kind: 'rarity', label: 'Quality order' },
+  { id: 'species_order', kind: 'species', label: 'Species order' },
+  { id: 'trophy_order', kind: 'trophy', label: 'Trophy order' },
+  { id: 'source_challenge', kind: 'source', label: 'Crew or angler challenge' },
 ];
 
 export const CONTRACT_REWARD_MULT = 9; // reward ≈ 9× a typical catch's value, scaled by effort

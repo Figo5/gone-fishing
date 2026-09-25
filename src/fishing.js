@@ -9,7 +9,7 @@
  * motion and the marker is skipped entirely there.
  */
 
-import { PLAYER_CAST } from './data.js';
+import { PLAYER_CAST, getBait, getLocation } from './data.js';
 import { stageTargetWindow } from './engine.js';
 import { els, formatCoins, formatWeight } from './ui.js';
 
@@ -26,6 +26,7 @@ if (typeof window !== 'undefined' && window.matchMedia) {
  * catch it on the way back too.
  */
 export function qualityFromElapsed(elapsed, state) {
+  if (reducedMotion) return 0.8;
   const { center, halfWidth } = stageTargetWindow(state);
   const loop = PLAYER_CAST.sweepMs * 2;
   const phase = ((elapsed % loop) + loop) % loop;
@@ -48,9 +49,11 @@ export function renderFishPanel(state, now, opts = {}) {
     <div class="fish-header">
       <p>You are fishing at <strong>${escape(locationName(state))}</strong> with
         ${escape(baitName(state))}. Your workers keep fishing while you do.</p>
-      <p class="muted">${nf2(state.player.catches)} catches by hand ·
+      <p class="muted">${nf2(state.player.catches)} ${state.player.catches === 1 ? 'catch' : 'catches'} by hand ·
         best ${formatWeight(state.player.bestWeight || 0)}</p>
     </div>`;
+
+  if (state.paused) return `${header}<p class="muted">The business is paused. Resume it on the Dock to fish again.</p>`;
 
   if (game) {
     const stageNum = game.stage + 1;
@@ -94,12 +97,10 @@ export function renderFishPanel(state, now, opts = {}) {
 }
 
 function locationName(state) {
-  return LOCATION_NAMES[state.player.locationId] || state.player.locationId;
+  return getLocation(state.player.locationId)?.name || state.player.locationId;
 }
 function baitName(state) {
-  return BAIT_NAMES[state.player.baitId] || state.player.baitId;
+  return getBait(state.player.baitId)?.name || state.player.baitId;
 }
-const LOCATION_NAMES = { loc_pond: 'Stillwater Pond', loc_river: 'Willow River', loc_lake: 'Moonlit Lake' };
-const BAIT_NAMES = { bait_worms: 'Worms', bait_minnows: 'Minnows', bait_glow: 'the Glow Lure' };
 
 function nf2(n) { return new Intl.NumberFormat('en-US').format(n); }

@@ -5,12 +5,14 @@
 
 import {
   PRESTIGE,
+  LEGACY_PERKS,
   getLocation,
 } from './data.js';
 import {
   earningsMultiplier,
   prestigeEligibility,
   prestigeThreshold,
+  prestigeThresholdForCount,
 } from './engine.js';
 import { formatCoins, nf } from './ui.js';
 
@@ -42,9 +44,11 @@ export function renderPrestige(state) {
         ${requirementRow('Run earnings (spending does not reduce this)',
           formatCoins(el.earnings), formatCoins(el.threshold), el.earningsMet)}
         ${requirementRow('Workers on the payroll', state.workers.length, PRESTIGE.minWorkers, el.workersMet)}
+        ${requirementRow('Distinct species discovered', el.discovered, el.discoveriesNeeded, el.discoveriesMet)}
+        ${requirementRow('Species with a trophy catch', el.trophySpecies, el.trophySpeciesNeeded, el.trophySpeciesMet)}
       </ul>
       <p class="muted">Run earnings count every coin this run has earned — wallet spending never
-      reduces them. The next threshold is ${formatCoins(prestigeThreshold(state) + PRESTIGE.thresholdGrowth)}.</p>
+      reduces them. The next threshold is ${formatCoins(prestigeThresholdForCount(count + 1))}.</p>
     </section>`;
 
   const reward = `
@@ -56,6 +60,12 @@ export function renderPrestige(state) {
         It applies to every sale and contract bonus, forever, and grows by
         ${PRESTIGE.multCoefficient.toFixed(2)}× per prestige.</p>
       <p>Prestiges so far: <strong>${nf.format(count)}</strong></p>
+      <p>Legacy points to spend: <strong>${nf.format(state.legacy.points)}</strong> · one new point each move.</p>
+      <div class="legacy-grid">${LEGACY_PERKS.map((perk) => {
+        const owned = state.legacy.perks.includes(perk.id);
+        return `<article class="contract-offer"><strong>${escape(perk.name)}</strong><p class="muted">${escape(perk.blurb)}</p>
+          <button type="button" class="btn" data-legacy-perk="${perk.id}" data-focus="perk-${perk.id}" ${owned || !state.legacy.points ? 'disabled' : ''}>${owned ? 'Owned' : 'Spend 1 point'}</button></article>`;
+      }).join('')}</div>
     </section>`;
 
   const effects = `
@@ -69,6 +79,7 @@ export function renderPrestige(state) {
             <li>Lifetime statistics</li>
             <li>Every unlocked fishing location — old waters stay open</li>
             <li>Prestige count and the permanent multiplier</li>
+            <li>Legacy points and purchased perks</li>
             <li>Access to prestige-tier equipment (buy it again to use it)</li>
             <li>Your pause setting and settings</li>
           </ul>
@@ -77,10 +88,11 @@ export function renderPrestige(state) {
           <h5>Reset</h5>
           <ul class="prestige-list reset">
             <li>Coins → 0</li>
-            <li>Crew → the single free worker, at the new pond</li>
+            <li>Crew → ${state.legacy.perks.includes('starterCrew') ? 'two starting workers (Trusted Deckhand)' : 'one free worker'}, at the new pond</li>
             <li>Dock → the original two berths; stall, training and reel control → level 1</li>
             <li>Rods → Bamboo Pole; bait → Worms</li>
             <li>The current contract and its offers</li>
+            <li>Contract office and today's event</li>
           </ul>
         </div>
       </div>
@@ -89,7 +101,7 @@ export function renderPrestige(state) {
   const confirm = el.eligible
     ? `<button type="button" class="btn btn-primary" data-prestige-open data-focus="prestige-open">
          Move to ${escape(destLocation.name)} at ${el.nextMultiplier.toFixed(2)}×</button>
-       <p class="muted">A confirmation step follows, with a backup export before anything changes.</p>`
+       <p class="muted">A confirmation step follows. A pre-move save is kept in this browser when storage is available.</p>`
     : `<button type="button" class="btn" disabled>Keep fishing — requirements not met yet</button>
        <p class="muted">Nothing happens automatically; the move stays available once the
        requirements above are met.</p>`;
@@ -112,7 +124,7 @@ export function prestigeConfirmBody(state) {
     <p>You are moving the business to <strong>${escape(destLocation.name)}</strong>.</p>
     <p>Earnings multiplier: <strong>${el.multiplier.toFixed(2)}×</strong> →
        <strong class="prestige-next">${el.nextMultiplier.toFixed(2)}×</strong> permanently.</p>
-    <p class="muted">Preserved: collection, records, unlocked waters, prestige count.
-    Reset: coins, crew, dock, stall, training, reels, rods, bait, contracts.
+    <p class="muted">Preserved: collection, records, unlocked waters, prestige count and legacy perks.
+    Reset: coins, crew, dock, stall, training, reels, rods, bait, contract office and contracts.
     A backup of this save is kept before the move.</p>`;
 }

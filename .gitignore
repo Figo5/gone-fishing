@@ -7,3 +7,4 @@
 # Nothing here needs node_modules (the game has zero dependencies), but if a
 # tool is ever run locally, keep it out of the repo.
 node_modules/
+dist/

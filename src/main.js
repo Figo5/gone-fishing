@@ -6,7 +6,7 @@
  * catches; it is canceled (without penalty) on hide, pause, or navigation.
  */
 
-import { AWAY_THRESHOLD_MS, getSpecies } from './data.js';
+import { AWAY_THRESHOLD_MS, conditionAt, getSpecies } from './data.js';
 import {
   abandonContract,
   acceptContract,
@@ -14,7 +14,10 @@ import {
   assignWorker,
   cancelPlayerCast,
   createNewState,
+  buyLegacyPerk,
+  chooseEvent,
   earningsMultiplier,
+  equipRod,
   expandDock,
   generateContracts,
   hireWorker,
@@ -26,6 +29,7 @@ import {
   setPaused,
   startPlayerCast,
   submitPlayerInput,
+  upgradeContractOffice,
   upgradeReelControl,
   upgradeRod,
   upgradeStall,
@@ -35,6 +39,7 @@ import {
 import { seedFromTime } from './rng.js';
 import {
   LOCK_KEY,
+  backupToStorage,
   exportSave,
   deserialize,
   getStorage,
@@ -85,9 +90,8 @@ function boot({ readOnly = false } = {}) {
     state = loaded.state;
     if (loaded.migrated) {
       banner(
-        `<strong>Welcome to the dock!</strong> Your old game carried over: coins, gear, collection and
-        records are untouched. Your automatic fisher is now <strong>Worker 1</strong>, fishing the same
-        water with the same bait. A backup of the old save was kept in this browser.`,
+        `<strong>Save upgraded.</strong> Your coins, gear, crew, collection and records carried over.
+        A backup of the previous save was kept in this browser.`,
         'warn', 'migrated',
       );
       setTimeout(() => clearBanner('migrated'), 12000);
@@ -156,9 +160,11 @@ function renderScenePlayer() {
   const el = document.getElementById('scene-player');
   if (!el) return;
   const shown = state.player.locationId;
-  const key = `${shown}|${state.dockLevel}|${state.stallLevel}`;
+  const condition = conditionAt(shown, state.processedAt).id;
+  const key = `${shown}|${condition}|${state.dockLevel}|${state.stallLevel}`;
   if (key === scenePlayerKey) return;
   scenePlayerKey = key;
+  el.className = `scene weather-${condition}`;
   const sceneLocation = { scene: LOCATION_SCENE[shown] || 'pond' };
   el.innerHTML = sceneSvg(sceneLocation, {
     workers: 0,
@@ -197,14 +203,17 @@ function withFocusHold(mutator) {
 function renderAfterCatches(summary) {
   withFocusHold(() => {
     renderHeader(state, estimateIncome());
+    renderScene(state);
+    renderScenePlayer();
     renderControls(state);
     renderRecent(state, { animate: true });
     renderDock();
     if (activePanel === 'collection') renderCollection(state);
     if (activePanel === 'tackle') renderTackle(state);
   });
-  if (summary.newSpecies && summary.newSpecies.length) {
-    const names = [...new Set(summary.newSpecies)].map((id) => getSpecies(id).name);
+  const newSpecies = summary.catches.filter((r) => r.isNewSpecies).map((r) => r.speciesId);
+  if (newSpecies.length) {
+    const names = [...new Set(newSpecies)].map((id) => getSpecies(id).name);
     banner(`New species discovered: <strong>${names.join(', ')}</strong>`, 'warn', 'discovery');
     setTimeout(() => clearBanner('discovery'), 6000);
   }
@@ -296,6 +305,7 @@ window.addEventListener('pagehide', () => {
 /* ------------------------------------------------------------------- tabs */
 
 function selectedTab(panel) {
+  if (activePanel === 'fish' && panel !== 'fish') cancelPlayerCast(state);
   activePanel = panel;
   for (const tab of document.querySelectorAll('.tab')) {
     tab.setAttribute('aria-selected', String(tab.dataset.panel === panel));
@@ -328,7 +338,7 @@ els.toggle.addEventListener('click', () => {
 
 document.addEventListener('click', (event) => {
   const target = event.target.closest(
-    '[data-invest],[data-assign-location],[data-assign-bait],[data-buy-rod],[data-buy-bait],[data-buy-location],[data-player-bait],[data-player-location],[data-cast],[data-reel],[data-cancel-cast],[data-calm-reel],[data-accept],[data-abandon],[data-refresh-board],[data-buy-training],[data-buy-reel],[data-prestige-open]',
+    '[data-invest],[data-assign-location],[data-assign-bait],[data-buy-rod],[data-select-rod],[data-buy-bait],[data-buy-location],[data-player-bait],[data-player-location],[data-cast],[data-reel],[data-cancel-cast],[data-calm-reel],[data-accept],[data-abandon],[data-refresh-board],[data-buy-training],[data-buy-reel],[data-buy-office],[data-event],[data-legacy-perk],[data-prestige-open]',
   );
   if (!target) return;
   const now = Date.now();
@@ -371,6 +381,7 @@ document.addEventListener('click', (event) => {
 
   // --- tackle
   else if (target.dataset.buyRod) { upgradeRod(state, now, target.dataset.buyRod); }
+  else if (target.dataset.selectRod) { equipRod(state, now, target.dataset.selectRod); }
   else if (target.dataset.buyBait) {
     const result = purchaseBait(state, now, target.dataset.buyBait);
     if (!result.ok && result.reason === 'insufficient_coins') {
@@ -398,7 +409,10 @@ document.addEventListener('click', (event) => {
     const submit = submitPlayerInput(state, now2, q);
     if (submit.ok && submit.complete) {
       const settled = settlePlayerCast(state, now2, false);
-      if (settled.ok) lastPlayerResult = { ...settled, speciesName: getSpecies(settled.speciesId).name };
+      if (settled.ok) {
+        lastPlayerResult = { ...settled, speciesName: getSpecies(settled.speciesId).name };
+        renderAfterCatches({ catches: [settled], contractCompletions: settled.contractComplete ? [settled.contractComplete] : [] });
+      }
     }
     renderFishBody(now2);
     needRender = false;
@@ -410,7 +424,10 @@ document.addEventListener('click', (event) => {
     const result = startPlayerCast(state, now);
     if (result.ok) {
       const settled = settlePlayerCast(state, now, true);
-      if (settled.ok) lastPlayerResult = { ...settled, speciesName: getSpecies(settled.speciesId).name, auto: true };
+      if (settled.ok) {
+        lastPlayerResult = { ...settled, speciesName: getSpecies(settled.speciesId).name, auto: true };
+        renderAfterCatches({ catches: [settled], contractCompletions: settled.contractComplete ? [settled.contractComplete] : [] });
+      }
     }
     renderFishBody(now);
     needRender = false;
@@ -429,6 +446,12 @@ document.addEventListener('click', (event) => {
       banner(`Not enough coins yet — you need ${formatCoins(result.missing)} more.`, 'warn', 'invest');
       needRender = false;
     }
+  } else if (target.hasAttribute('data-buy-office')) {
+    upgradeContractOffice(state, now);
+  } else if (target.dataset.event) {
+    chooseEvent(state, now, target.dataset.event);
+  } else if (target.dataset.legacyPerk) {
+    buyLegacyPerk(state, target.dataset.legacyPerk);
   }
 
   // --- prestige confirmation opener (actual prestige happens after confirm)
@@ -446,13 +469,23 @@ document.addEventListener('click', (event) => {
           // Recheck eligibility against the authoritative state at confirm time.
           const now2 = Date.now();
           advanceState(state, now2); // settle old-run time under old bonuses
+          if (!prestigeEligibility(state).eligible) {
+            banner('Prestige requirements changed — nothing was reset.', 'error', 'prestige');
+            return;
+          }
+          cancelPlayerCast(state);
+          const backup = backupToStorage(storage, state);
+          if (storageAvailable && !backup.ok) {
+            banner('A pre-move backup could not be saved. Export your save from Settings, then try again.', 'error', 'prestige');
+            return;
+          }
           const result = performPrestige(state, now2);
           if (!result.ok) {
             banner('Prestige requirements changed — nothing was reset.', 'error', 'prestige');
             return;
           }
           dirty = true;
-          persist(true, { backupRaw: JSON.stringify(state), wasMigrated: false });
+          persist(true);
           renderAll();
           banner(
             `Prestige ${result.count}! The business moved to <strong>${result.destination.location.name}</strong>.
